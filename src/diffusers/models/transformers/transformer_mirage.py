@@ -360,10 +360,12 @@ class MirageBlock(nn.Module):
             bs, _, l_img, _ = img_q.shape
             l_txt = txt_k.shape[2]
 
-            assert attention_mask.dim() == 2, f"Unsupported attention_mask shape: {attention_mask.shape}"
-            assert attention_mask.shape[-1] == l_txt, (
-                f"attention_mask last dim {attention_mask.shape[-1]} must equal text length {l_txt}"
-            )
+            if attention_mask.dim() != 2:
+                raise ValueError(f"Unsupported attention_mask shape: {attention_mask.shape}")
+            if attention_mask.shape[-1] != l_txt:
+                raise ValueError(
+                    f"attention_mask last dim {attention_mask.shape[-1]} must equal text length {l_txt}"
+                )
 
             device = img_q.device
 
