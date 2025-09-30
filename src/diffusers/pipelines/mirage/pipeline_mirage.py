@@ -247,26 +247,61 @@ class MiragePipeline(
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], **kwargs):
         """
-        Override from_pretrained to ensure T5GemmaEncoder is available for loading.
+        Override from_pretrained to load VAE and text encoder from HuggingFace models.
 
-        This ensures that T5GemmaEncoder from transformers is accessible in the module namespace
-        during component loading, which is required for MiragePipeline checkpoints that use
-        T5GemmaEncoder as the text encoder.
+        The MiragePipeline checkpoints only store transformer and scheduler locally.
+        VAE and text encoder are loaded from external HuggingFace models as specified
+        in model_index.json.
         """
-        # Ensure T5GemmaEncoder is available for loading
-        import transformers
+        import json
+        from transformers.models.t5gemma.modeling_t5gemma import T5GemmaModel
 
-        if not hasattr(transformers, "T5GemmaEncoder"):
-            try:
-                from transformers.models.t5gemma.modeling_t5gemma import T5GemmaEncoder
+        model_index_path = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        if not os.path.exists(model_index_path):
+            raise ValueError(f"model_index.json not found in {pretrained_model_name_or_path}")
 
-                transformers.T5GemmaEncoder = T5GemmaEncoder
-            except ImportError:
-                # T5GemmaEncoder not available in this transformers version
-                pass
+        with open(model_index_path, "r") as f:
+            model_index = json.load(f)
 
-        # Proceed with standard loading
-        return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+        vae_model_name = model_index.get("vae")
+        vae_subfolder = model_index.get("vae_subfolder")
+        text_model_name = model_index.get("text_encoder")
+        tokenizer_model_name = model_index.get("tokenizer")
+
+        logger.info(f"Loading VAE from {vae_model_name}...")
+        if "FLUX" in vae_model_name or "flux" in vae_model_name:
+            vae = AutoencoderKL.from_pretrained(vae_model_name, subfolder=vae_subfolder)
+        else:  # DC-AE
+            vae = AutoencoderDC.from_pretrained(vae_model_name)
+
+        logger.info(f"Loading text encoder from {text_model_name}...")
+        t5gemma_model = T5GemmaModel.from_pretrained(text_model_name)
+        text_encoder = t5gemma_model.encoder
+
+        logger.info(f"Loading tokenizer from {tokenizer_model_name}...")
+        tokenizer = GemmaTokenizerFast.from_pretrained(tokenizer_model_name)
+        tokenizer.model_max_length = 256
+
+        # Load transformer and scheduler from local checkpoint
+        logger.info(f"Loading transformer from {pretrained_model_name_or_path}...")
+        transformer = MirageTransformer2DModel.from_pretrained(
+            pretrained_model_name_or_path, subfolder="transformer"
+        )
+
+        logger.info(f"Loading scheduler from {pretrained_model_name_or_path}...")
+        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+            pretrained_model_name_or_path, subfolder="scheduler"
+        )
+
+        pipeline = cls(
+            transformer=transformer,
+            scheduler=scheduler,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            vae=vae,
+        )
+
+        return pipeline
 
     def __init__(
         self,
@@ -283,11 +318,8 @@ class MiragePipeline(
                 "MirageTransformer2DModel is not available. Please ensure the transformer_mirage module is properly installed."
             )
 
-        # Store standard components
         self.text_encoder = text_encoder
         self.tokenizer = tokenizer
-
-        # Initialize text preprocessor
         self.text_preprocessor = TextPreprocessor()
 
         self.register_modules(

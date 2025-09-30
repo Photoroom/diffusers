@@ -84,13 +84,6 @@ def convert_checkpoint_parameters(old_state_dict: Dict[str, torch.Tensor], depth
     mapping = create_parameter_mapping(depth)
     converted_state_dict = {}
 
-    # First, print available keys to understand structure
-    print("Available keys in checkpoint:")
-    for key in sorted(old_state_dict.keys())[:10]:  # Show first 10 keys
-        print(f"  {key}")
-    if len(old_state_dict) > 10:
-        print(f"  ... and {len(old_state_dict) - 10} more")
-
     for key, value in old_state_dict.items():
         new_key = key
 
@@ -196,171 +189,36 @@ def create_scheduler_config(output_path: str):
     print("✓ Created scheduler config")
 
 
-def create_vae_config(vae_type: str, output_path: str):
-    """Create VAE config based on type."""
-
-    if vae_type == "flux":
-        vae_config = {
-            "_class_name": "AutoencoderKL",
-            "latent_channels": 16,
-            "block_out_channels": [128, 256, 512, 512],
-            "down_block_types": [
-                "DownEncoderBlock2D",
-                "DownEncoderBlock2D",
-                "DownEncoderBlock2D",
-                "DownEncoderBlock2D"
-            ],
-            "up_block_types": [
-                "UpDecoderBlock2D",
-                "UpDecoderBlock2D",
-                "UpDecoderBlock2D",
-                "UpDecoderBlock2D"
-            ],
-            "scaling_factor": 0.3611,
-            "shift_factor": 0.1159,
-            "use_post_quant_conv": False,
-            "use_quant_conv": False
-        }
-    else:  # dc-ae
-        vae_config = {
-            "_class_name": "AutoencoderDC",
-            "latent_channels": 32,
-            "encoder_block_out_channels": [128, 256, 512, 512, 1024, 1024],
-            "decoder_block_out_channels": [128, 256, 512, 512, 1024, 1024],
-            "encoder_block_types": [
-                "ResBlock",
-                "ResBlock",
-                "ResBlock",
-                "EfficientViTBlock",
-                "EfficientViTBlock",
-                "EfficientViTBlock"
-            ],
-            "decoder_block_types": [
-                "ResBlock",
-                "ResBlock",
-                "ResBlock",
-                "EfficientViTBlock",
-                "EfficientViTBlock",
-                "EfficientViTBlock"
-            ],
-            "encoder_layers_per_block": [2, 2, 2, 3, 3, 3],
-            "decoder_layers_per_block": [3, 3, 3, 3, 3, 3],
-            "encoder_qkv_multiscales": [[], [], [], [5], [5], [5]],
-            "decoder_qkv_multiscales": [[], [], [], [5], [5], [5]],
-            "scaling_factor": 0.41407,
-            "upsample_block_type": "interpolate"
-        }
-
-    vae_path = os.path.join(output_path, "vae")
-    os.makedirs(vae_path, exist_ok=True)
-
-    with open(os.path.join(vae_path, "config.json"), "w") as f:
-        json.dump(vae_config, f, indent=2)
-
-    print("✓ Created VAE config")
-
-
-def create_text_encoder_config(output_path: str):
-    """Create T5GemmaEncoder config."""
-
-    text_encoder_config = {
-        "model_name": "google/t5gemma-2b-2b-ul2",
-        "model_max_length": 256,
-        "use_attn_mask": True,
-        "use_last_hidden_state": True
-    }
-
-    text_encoder_path = os.path.join(output_path, "text_encoder")
-    os.makedirs(text_encoder_path, exist_ok=True)
-
-    with open(os.path.join(text_encoder_path, "config.json"), "w") as f:
-        json.dump(text_encoder_config, f, indent=2)
-
-    print("✓ Created text encoder config")
-
-
-def create_tokenizer_config(output_path: str):
-    """Create GemmaTokenizerFast config and files."""
-
-    tokenizer_config = {
-        "add_bos_token": False,
-        "add_eos_token": False,
-        "added_tokens_decoder": {
-            "0": {"content": "<pad>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True},
-            "1": {"content": "<eos>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True},
-            "2": {"content": "<bos>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True},
-            "3": {"content": "<unk>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True},
-            "106": {"content": "<start_of_turn>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True},
-            "107": {"content": "<end_of_turn>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True}
-        },
-        "additional_special_tokens": ["<start_of_turn>", "<end_of_turn>"],
-        "bos_token": "<bos>",
-        "clean_up_tokenization_spaces": False,
-        "eos_token": "<eos>",
-        "extra_special_tokens": {},
-        "model_max_length": 256,
-        "pad_token": "<pad>",
-        "padding_side": "right",
-        "sp_model_kwargs": {},
-        "spaces_between_special_tokens": False,
-        "tokenizer_class": "GemmaTokenizer",
-        "unk_token": "<unk>",
-        "use_default_system_prompt": False
-    }
-
-    special_tokens_map = {
-        "bos_token": "<bos>",
-        "eos_token": "<eos>",
-        "pad_token": "<pad>",
-        "unk_token": "<unk>"
-    }
-
-    tokenizer_path = os.path.join(output_path, "tokenizer")
-    os.makedirs(tokenizer_path, exist_ok=True)
-
-    with open(os.path.join(tokenizer_path, "tokenizer_config.json"), "w") as f:
-        json.dump(tokenizer_config, f, indent=2)
-
-    with open(os.path.join(tokenizer_path, "special_tokens_map.json"), "w") as f:
-        json.dump(special_tokens_map, f, indent=2)
-
-    print("✓ Created tokenizer config (Note: tokenizer.json and tokenizer.model files need to be provided separately)")
-
-
-def create_pipeline_components(vae_type: str, output_path: str):
-    """Create all pipeline components with proper configs."""
-
-    create_scheduler_config(output_path)
-    create_vae_config(vae_type, output_path)
-    create_text_encoder_config(output_path)
-    create_tokenizer_config(output_path)
 
 
 def create_model_index(vae_type: str, output_path: str):
-    """Create model_index.json for the pipeline."""
+    """Create model_index.json for the pipeline with HuggingFace model references."""
 
     if vae_type == "flux":
-        vae_class = "AutoencoderKL"
+        vae_model_name = "black-forest-labs/FLUX.1-dev"
+        vae_subfolder = "vae"
     else:  # dc-ae
-        vae_class = "AutoencoderDC"
+        vae_model_name = "mit-han-lab/dc-ae-f32c32-sana-1.0-diffusers"
+        vae_subfolder = None
+
+    # Text encoder and tokenizer always use T5Gemma
+    text_model_name = "google/t5gemma-2b-2b-ul2"
 
     model_index = {
         "_class_name": "MiragePipeline",
         "_diffusers_version": "0.31.0.dev0",
         "_name_or_path": os.path.basename(output_path),
         "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
-        "text_encoder": ["transformers", "T5GemmaEncoder"],
-        "tokenizer": ["transformers", "GemmaTokenizerFast"],
+        "text_encoder": text_model_name,
+        "tokenizer": text_model_name,
         "transformer": ["diffusers", "MirageTransformer2DModel"],
-        "vae": ["diffusers", vae_class],
+        "vae": vae_model_name,
+        "vae_subfolder": vae_subfolder,
     }
 
     model_index_path = os.path.join(output_path, "model_index.json")
     with open(model_index_path, "w") as f:
         json.dump(model_index, f, indent=2)
-
-    print("✓ Created model_index.json")
-
 
 def main(args):
     # Validate inputs
@@ -389,10 +247,8 @@ def main(args):
     save_file(state_dict, os.path.join(transformer_path, "diffusion_pytorch_model.safetensors"))
     print(f"✓ Saved transformer to {transformer_path}")
 
-    # Create other pipeline components
-    create_pipeline_components(args.vae_type, args.output_path)
+    create_scheduler_config(args.output_path)
 
-    # Create model index
     create_model_index(args.vae_type, args.output_path)
 
     # Verify the pipeline can be loaded
