@@ -640,13 +640,13 @@ class MiragePipeline(
                 t_cont = (t.float() / self.scheduler.config.num_train_timesteps).view(1).repeat(2).to(device)
 
                 # Process inputs for transformer
-                img_seq, txt, pe = self.transformer.process_inputs(latents_in, ca_embed)
+                img_seq, txt, pe = self.transformer._process_inputs(latents_in, ca_embed)
 
                 # Forward through transformer layers
-                img_seq = self.transformer.forward_transformers(
+                img_seq = self.transformer._forward_transformers(
                     img_seq,
                     txt,
-                    time_embedding=self.transformer.compute_timestep_embedding(t_cont, img_seq.dtype),
+                    time_embedding=self.transformer._compute_timestep_embedding(t_cont, img_seq.dtype),
                     pe=pe,
                     attention_mask=ca_mask,
                 )
