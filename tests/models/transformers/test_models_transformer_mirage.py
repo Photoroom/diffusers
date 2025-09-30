@@ -132,7 +132,7 @@ class MirageTransformerTests(ModelTesterMixin, unittest.TestCase):
         model.eval()
 
         with torch.no_grad():
-            img_seq, txt, pe = model.process_inputs(
+            img_seq, txt, pe = model._process_inputs(
                 inputs_dict["image_latent"], inputs_dict["cross_attn_conditioning"]
             )
 
@@ -160,12 +160,12 @@ class MirageTransformerTests(ModelTesterMixin, unittest.TestCase):
 
         with torch.no_grad():
             # Process inputs first
-            img_seq, txt, pe = model.process_inputs(
+            img_seq, txt, pe = model._process_inputs(
                 inputs_dict["image_latent"], inputs_dict["cross_attn_conditioning"]
             )
 
             # Test forward_transformers
-            output_seq = model.forward_transformers(img_seq, txt, timestep=inputs_dict["timestep"], pe=pe)
+            output_seq = model._forward_transformers(img_seq, txt, timestep=inputs_dict["timestep"], pe=pe)
 
         # Check output shape
         expected_out_channels = init_dict["in_channels"] * init_dict["patch_size"] ** 2

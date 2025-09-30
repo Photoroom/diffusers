@@ -33,20 +33,70 @@ from ..normalization import RMSNorm
 logger = logging.get_logger(__name__)
 
 
-def get_image_ids(bs: int, h: int, w: int, patch_size: int, device: torch.device) -> Tensor:
-    img_ids = torch.zeros(h // patch_size, w // patch_size, 2, device=device)
-    img_ids[..., 0] = torch.arange(h // patch_size, device=device)[:, None]
-    img_ids[..., 1] = torch.arange(w // patch_size, device=device)[None, :]
-    return img_ids.reshape((h // patch_size) * (w // patch_size), 2).unsqueeze(0).repeat(bs, 1, 1)
+def get_image_ids(batch_size: int, height: int, width: int, patch_size: int, device: torch.device) -> Tensor:
+    r"""
+    Generates 2D patch coordinate indices for a batch of images.
+
+    Parameters:
+        batch_size (`int`):
+            Number of images in the batch.
+        height (`int`):
+            Height of the input images (in pixels).
+        width (`int`):
+            Width of the input images (in pixels).
+        patch_size (`int`):
+            Size of the square patches that the image is divided into.
+        device (`torch.device`):
+            The device on which to create the tensor.
+
+    Returns:
+        `torch.Tensor`:
+            Tensor of shape `(batch_size, num_patches, 2)` containing the (row, col)
+            coordinates of each patch in the image grid.
+    """
+    
+    img_ids = torch.zeros(height // patch_size, width // patch_size, 2, device=device)
+    img_ids[..., 0] = torch.arange(height // patch_size, device=device)[:, None]
+    img_ids[..., 1] = torch.arange(width // patch_size, device=device)[None, :]
+    return img_ids.reshape((height // patch_size) * (width // patch_size), 2).unsqueeze(0).repeat(batch_size, 1, 1)
 
 
 def apply_rope(xq: Tensor, freqs_cis: Tensor) -> Tensor:
+    r"""
+    Applies rotary positional embeddings (RoPE) to a query tensor.
+
+    Parameters:
+        xq (`torch.Tensor`):
+            Input tensor of shape `(..., dim)` representing the queries.
+        freqs_cis (`torch.Tensor`):
+            Precomputed rotary frequency components of shape `(..., dim/2, 2)` 
+            containing cosine and sine pairs.
+
+    Returns:
+        `torch.Tensor`:
+            Tensor of the same shape as `xq` with rotary embeddings applied.
+    """
     xq_ = xq.float().reshape(*xq.shape[:-1], -1, 1, 2)
     xq_out = freqs_cis[..., 0] * xq_[..., 0] + freqs_cis[..., 1] * xq_[..., 1]
     return xq_out.reshape(*xq.shape).type_as(xq)
 
 
 class EmbedND(nn.Module):
+    r"""
+    N-dimensional rotary positional embedding.
+
+    This module creates rotary embeddings (RoPE) across multiple axes, where each
+    axis can have its own embedding dimension. The embeddings are combined and
+    returned as a single tensor
+    
+    Parameters:
+        dim (int):
+        Base embedding dimension (must be even).
+        theta (int):
+        Scaling factor that controls the frequency spectrum of the rotary embeddings.
+        axes_dim (list[int]):
+        List of embedding dimensions for each axis (each must be even).
+    """
     def __init__(self, dim: int, theta: int, axes_dim: list[int]):
         super().__init__()
         self.dim = dim
@@ -73,6 +123,19 @@ class EmbedND(nn.Module):
 
 
 class MLPEmbedder(nn.Module):
+    r"""
+    A simple 2-layer MLP used for embedding inputs.
+
+    Parameters:
+        in_dim (`int`):
+            Dimensionality of the input features.
+        hidden_dim (`int`):
+            Dimensionality of the hidden and output embedding space.
+
+    Returns:
+        `torch.Tensor`:
+            Tensor of shape `(..., hidden_dim)` containing the embedded representations.
+    """
     def __init__(self, in_dim: int, hidden_dim: int):
         super().__init__()
         self.in_layer = nn.Linear(in_dim, hidden_dim, bias=True)
@@ -84,6 +147,19 @@ class MLPEmbedder(nn.Module):
 
 
 class QKNorm(torch.nn.Module):
+    r"""
+    Applies RMS normalization to query and key tensors separately before attention
+    which can help stabilize training and improve numerical precision.
+
+    Parameters:
+        dim (`int`):
+            Dimensionality of the query and key vectors.
+
+    Returns:
+        (`torch.Tensor`, `torch.Tensor`):
+            A tuple `(q, k)` where both are normalized and cast to the same dtype
+            as the value tensor `v`.
+    """
     def __init__(self, dim: int):
         super().__init__()
         self.query_norm = RMSNorm(dim, eps=1e-6)
@@ -103,6 +179,22 @@ class ModulationOut:
 
 
 class Modulation(nn.Module):
+    r"""
+    Modulation network that generates scale, shift, and gating parameters.
+
+    Given an input vector, the module projects it through a linear layer to
+    produce six chunks, which are grouped into two `ModulationOut` objects.
+
+    Parameters:
+        dim (`int`):
+            Dimensionality of the input vector. The output will have `6 * dim`
+            features internally.
+
+    Returns:
+        (`ModulationOut`, `ModulationOut`):
+            A tuple of two modulation outputs. Each `ModulationOut` contains
+            three components (e.g., scale, shift, gate).
+    """
     def __init__(self, dim: int):
         super().__init__()
         self.lin = nn.Linear(dim, 6 * dim, bias=True)
@@ -115,6 +207,68 @@ class Modulation(nn.Module):
 
 
 class MirageBlock(nn.Module):
+    r"""
+    Multimodal transformer block with text–image cross-attention, modulation, and MLP.
+
+    Parameters:
+        hidden_size (`int`):
+            Dimension of the hidden representations.
+        num_heads (`int`):
+            Number of attention heads.
+        mlp_ratio (`float`, *optional*, defaults to 4.0):
+            Expansion ratio for the hidden dimension inside the MLP.
+        qk_scale (`float`, *optional*):
+            Scale factor for queries and keys. If not provided, defaults to
+            ``head_dim**-0.5``.
+
+    Attributes:
+        img_pre_norm (`nn.LayerNorm`):
+            Pre-normalization applied to image tokens before QKV projection.
+        img_qkv_proj (`nn.Linear`):
+            Linear projection to produce image queries, keys, and values.
+        qk_norm (`QKNorm`):
+            RMS normalization applied separately to image queries and keys.
+        txt_kv_proj (`nn.Linear`):
+            Linear projection to produce text keys and values.
+        k_norm (`RMSNorm`):
+            RMS normalization applied to text keys.
+        attention (`Attention`):
+            Multi-head attention module for cross-attention between image, text,
+            and optional spatial conditioning tokens.
+        post_attention_layernorm (`nn.LayerNorm`):
+            Normalization applied after attention.
+        gate_proj / up_proj / down_proj (`nn.Linear`):
+            Feedforward layers forming the gated MLP.
+        mlp_act (`nn.GELU`):
+            Nonlinear activation used in the MLP.
+        modulation (`Modulation`):
+            Produces scale/shift/gating parameters for modulated layers.
+        spatial_cond_kv_proj (`nn.Linear`, *optional*):
+            Projection for optional spatial conditioning tokens.
+
+    Methods:
+        attn_forward(img, txt, pe, modulation, spatial_conditioning=None, attention_mask=None):
+            Compute cross-attention between image and text tokens, with optional
+            spatial conditioning and attention masking.
+
+            Parameters:
+                img (`torch.Tensor`):
+                    Image tokens of shape `(B, L_img, hidden_size)`.
+                txt (`torch.Tensor`):
+                    Text tokens of shape `(B, L_txt, hidden_size)`.
+                pe (`torch.Tensor`):
+                    Rotary positional embeddings to apply to queries and keys.
+                modulation (`ModulationOut`):
+                    Scale and shift parameters for modulating image tokens.
+                spatial_conditioning (`torch.Tensor`, *optional*):
+                    Extra conditioning tokens of shape `(B, L_cond, hidden_size)`.
+                attention_mask (`torch.Tensor`, *optional*):
+                    Boolean mask of shape `(B, L_txt)` where 0 marks padding.
+
+            Returns:
+                `torch.Tensor`:
+                    Attention output of shape `(B, L_img, hidden_size)`.
+    """
     def __init__(
         self,
         hidden_size: int,
@@ -163,7 +317,7 @@ class MirageBlock(nn.Module):
         self.modulation = Modulation(hidden_size)
         self.spatial_cond_kv_proj: None | nn.Linear = None
 
-    def attn_forward(
+    def _attn_forward(
         self,
         img: Tensor,
         txt: Tensor,
@@ -236,7 +390,7 @@ class MirageBlock(nn.Module):
 
         return attn
 
-    def ffn_forward(self, x: Tensor, modulation: ModulationOut) -> Tensor:
+    def _ffn_forward(self, x: Tensor, modulation: ModulationOut) -> Tensor:
         x = (1 + modulation.scale) * self.post_attention_layernorm(x) + modulation.shift
         return self.down_proj(self.mlp_act(self.gate_proj(x)) * self.up_proj(x))
 
@@ -250,9 +404,36 @@ class MirageBlock(nn.Module):
         attention_mask: Tensor | None = None,
         **_: dict[str, Any],
     ) -> Tensor:
+        r"""
+    Runs modulation-gated cross-attention and MLP, with residual connections.
+
+    Parameters:
+        img (`torch.Tensor`):
+            Image tokens of shape `(B, L_img, hidden_size)`.
+        txt (`torch.Tensor`):
+            Text tokens of shape `(B, L_txt, hidden_size)`.
+        vec (`torch.Tensor`):
+            Conditioning vector used by `Modulation` to produce scale/shift/gates,
+            shape `(B, hidden_size)` (or broadcastable).
+        pe (`torch.Tensor`):
+            Rotary positional embeddings applied inside attention.
+        spatial_conditioning (`torch.Tensor`, *optional*):
+            Extra conditioning tokens of shape `(B, L_cond, hidden_size)`. Used only
+            if spatial conditioning is enabled in the block.
+        attention_mask (`torch.Tensor`, *optional*):
+            Boolean mask for text tokens of shape `(B, L_txt)`, where `0` marks padding.
+        **_:
+            Ignored additional keyword arguments for API compatibility.
+
+    Returns:
+        `torch.Tensor`:
+            Updated image tokens of shape `(B, L_img, hidden_size)`.
+    """
+
+
         mod_attn, mod_mlp = self.modulation(vec)
 
-        img = img + mod_attn.gate * self.attn_forward(
+        img = img + mod_attn.gate * self._attn_forward(
             img,
             txt,
             pe,
@@ -260,12 +441,39 @@ class MirageBlock(nn.Module):
             spatial_conditioning=spatial_conditioning,
             attention_mask=attention_mask,
         )
-        img = img + mod_mlp.gate * self.ffn_forward(img, mod_mlp)
+        img = img + mod_mlp.gate * self._ffn_forward(img, mod_mlp)
         return img
 
 
 class LastLayer(nn.Module):
+    r"""
+    Final projection layer with adaptive LayerNorm modulation.
+
+    This layer applies a normalized and modulated transformation to input tokens
+    and projects them into patch-level outputs.
+
+    Parameters:
+        hidden_size (`int`):
+            Dimensionality of the input tokens.
+        patch_size (`int`):
+            Size of the square image patches.
+        out_channels (`int`):
+            Number of output channels per pixel (e.g. RGB = 3).
+
+    Forward Inputs:
+        x (`torch.Tensor`):
+            Input tokens of shape `(B, L, hidden_size)`, where `L` is the number of patches.
+        vec (`torch.Tensor`):
+            Conditioning vector of shape `(B, hidden_size)` used to generate
+            shift and scale parameters for adaptive LayerNorm.
+
+    Returns:
+        `torch.Tensor`:
+            Projected patch outputs of shape `(B, L, patch_size * patch_size * out_channels)`.
+    """
+
     def __init__(self, hidden_size: int, patch_size: int, out_channels: int):
+        
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
@@ -284,12 +492,41 @@ class LastLayer(nn.Module):
 
 
 def img2seq(img: Tensor, patch_size: int) -> Tensor:
-    """Flatten an image into a sequence of patches"""
+    r"""
+    Flattens an image tensor into a sequence of non-overlapping patches.
+
+    Parameters:
+        img (`torch.Tensor`):
+            Input image tensor of shape `(B, C, H, W)`.
+        patch_size (`int`):
+            Size of each square patch. Must evenly divide both `H` and `W`.
+
+    Returns:
+        `torch.Tensor`:
+            Flattened patch sequence of shape `(B, L, C * patch_size * patch_size)`,
+            where `L = (H // patch_size) * (W // patch_size)` is the number of patches.
+    """
     return unfold(img, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
 
 
 def seq2img(seq: Tensor, patch_size: int, shape: Tensor) -> Tensor:
-    """Revert img2seq"""
+    r"""
+    Reconstructs an image tensor from a sequence of patches (inverse of `img2seq`).
+
+    Parameters:
+        seq (`torch.Tensor`):
+            Patch sequence of shape `(B, L, C * patch_size * patch_size)`,
+            where `L = (H // patch_size) * (W // patch_size)`.
+        patch_size (`int`):
+            Size of each square patch.
+        shape (`tuple` or `torch.Tensor`):
+            The original image spatial shape `(H, W)`. If a tensor is provided,
+            the first two values are interpreted as height and width.
+
+    Returns:
+        `torch.Tensor`:
+            Reconstructed image tensor of shape `(B, C, H, W)`.
+    """
     if isinstance(shape, tuple):
         shape = shape[-2:]
     elif isinstance(shape, torch.Tensor):
@@ -300,7 +537,70 @@ def seq2img(seq: Tensor, patch_size: int, shape: Tensor) -> Tensor:
 
 
 class MirageTransformer2DModel(ModelMixin, ConfigMixin):
-    """Mirage Transformer model with IP-Adapter support."""
+    r"""
+    Transformer-based 2D model for text to image generation.
+    It supports attention processor injection and LoRA scaling.
+
+    Parameters:
+        in_channels (`int`, *optional*, defaults to 16):
+            Number of input channels in the latent image.
+        patch_size (`int`, *optional*, defaults to 2):
+            Size of the square patches used to flatten the input image.
+        context_in_dim (`int`, *optional*, defaults to 2304):
+            Dimensionality of the text conditioning input.
+        hidden_size (`int`, *optional*, defaults to 1792):
+            Dimension of the hidden representation.
+        mlp_ratio (`float`, *optional*, defaults to 3.5):
+            Expansion ratio for the hidden dimension inside MLP blocks.
+        num_heads (`int`, *optional*, defaults to 28):
+            Number of attention heads.
+        depth (`int`, *optional*, defaults to 16):
+            Number of transformer blocks.
+        axes_dim (`list[int]`, *optional*):
+            List of dimensions for each positional embedding axis. Defaults to `[32, 32]`.
+        theta (`int`, *optional*, defaults to 10000):
+            Frequency scaling factor for rotary embeddings.
+        time_factor (`float`, *optional*, defaults to 1000.0):
+            Scaling factor applied in timestep embeddings.
+        time_max_period (`int`, *optional*, defaults to 10000):
+            Maximum frequency period for timestep embeddings.
+        conditioning_block_ids (`list[int]`, *optional*):
+            Indices of blocks that receive conditioning. Defaults to all blocks.
+        **kwargs:
+            Additional keyword arguments forwarded to the config.
+
+    Attributes:
+        pe_embedder (`EmbedND`):
+            Multi-axis rotary embedding generator for positional encodings.
+        img_in (`nn.Linear`):
+            Projection layer for image patch tokens.
+        time_in (`MLPEmbedder`):
+            Embedding layer for timestep embeddings.
+        txt_in (`nn.Linear`):
+            Projection layer for text conditioning.
+        blocks (`nn.ModuleList`):
+            Stack of transformer blocks (`MirageBlock`).
+        final_layer (`LastLayer`):
+            Projection layer mapping hidden tokens back to patch outputs.
+
+    Methods:
+        attn_processors:
+            Returns a dictionary of all attention processors in the model.
+        set_attn_processor(processor):
+            Replaces attention processors across all attention layers.
+        process_inputs(image_latent, txt):
+            Converts inputs into patch tokens, encodes text, and produces positional encodings.
+        compute_timestep_embedding(timestep, dtype):
+            Creates a timestep embedding of dimension 256, scaled and projected.
+        forward_transformers(image_latent, cross_attn_conditioning, timestep, time_embedding, attention_mask, **block_kwargs):
+            Runs the sequence of transformer blocks over image and text tokens.
+        forward(image_latent, timestep, cross_attn_conditioning, micro_conditioning, cross_attn_mask=None, attention_kwargs=None, return_dict=True):
+            Full forward pass from latent input to reconstructed output image.
+
+    Returns:
+        `Transformer2DModelOutput` if `return_dict=True` (default), otherwise a tuple containing:
+            - `sample` (`torch.Tensor`): Reconstructed image of shape `(B, C, H, W)`.
+    """
 
     config_name = "config.json"
     _supports_gradient_checkpointing = True
@@ -424,8 +724,8 @@ class MirageTransformer2DModel(ModelMixin, ConfigMixin):
         for name, module in self.named_children():
             fn_recursive_attn_processor(name, module, processor)
 
-    def process_inputs(self, image_latent: Tensor, txt: Tensor, **_: Any) -> tuple[Tensor, Tensor, Tensor]:
-        """Timestep independent stuff"""
+    def _process_inputs(self, image_latent: Tensor, txt: Tensor, **_: Any) -> tuple[Tensor, Tensor, Tensor]:
+        
         txt = self.txt_in(txt)
         img = img2seq(image_latent, self.patch_size)
         bs, _, h, w = image_latent.shape
@@ -433,7 +733,7 @@ class MirageTransformer2DModel(ModelMixin, ConfigMixin):
         pe = self.pe_embedder(img_ids)
         return img, txt, pe
 
-    def compute_timestep_embedding(self, timestep: Tensor, dtype: torch.dtype) -> Tensor:
+    def _compute_timestep_embedding(self, timestep: Tensor, dtype: torch.dtype) -> Tensor:
         return self.time_in(
             get_timestep_embedding(
                 timesteps=timestep,
@@ -444,7 +744,7 @@ class MirageTransformer2DModel(ModelMixin, ConfigMixin):
             ).to(dtype)
         )
 
-    def forward_transformers(
+    def _forward_transformers(
         self,
         image_latent: Tensor,
         cross_attn_conditioning: Tensor,
@@ -460,7 +760,7 @@ class MirageTransformer2DModel(ModelMixin, ConfigMixin):
         else:
             if timestep is None:
                 raise ValueError("Please provide either a timestep or a timestep_embedding")
-            vec = self.compute_timestep_embedding(timestep, dtype=img.dtype)
+            vec = self._compute_timestep_embedding(timestep, dtype=img.dtype)
 
         for block in self.blocks:
             img = block(img=img, txt=cross_attn_conditioning, vec=vec, attention_mask=attention_mask, **block_kwargs)
@@ -478,6 +778,35 @@ class MirageTransformer2DModel(ModelMixin, ConfigMixin):
         attention_kwargs: Optional[Dict[str, Any]] = None,
         return_dict: bool = True,
     ) -> Union[Tuple[torch.Tensor, ...], Transformer2DModelOutput]:
+        r"""
+        Forward pass of the MirageTransformer2DModel.
+
+        The latent image is split into patch tokens, combined with text conditioning,
+        and processed through a stack of transformer blocks modulated by the timestep.
+        The output is reconstructed into the latent image space.
+
+        Parameters:
+            image_latent (`torch.Tensor`):
+                Input latent image tensor of shape `(B, C, H, W)`.
+            timestep (`torch.Tensor`):
+                Timestep tensor of shape `(B,)` or `(1,)`, used for temporal conditioning.
+            cross_attn_conditioning (`torch.Tensor`):
+                Text conditioning tensor of shape `(B, L_txt, context_in_dim)`.
+            micro_conditioning (`torch.Tensor`):
+                Extra conditioning vector (currently unused, reserved for future use).
+            cross_attn_mask (`torch.Tensor`, *optional*):
+                Boolean mask of shape `(B, L_txt)`, where `0` marks padding in the text sequence.
+            attention_kwargs (`dict`, *optional*):
+                Additional arguments passed to attention layers. If using the PEFT backend,
+                the key `"scale"` controls LoRA scaling (default: 1.0).
+            return_dict (`bool`, *optional*, defaults to `True`):
+                Whether to return a `Transformer2DModelOutput` or a tuple.
+
+        Returns:
+            `Transformer2DModelOutput` if `return_dict=True`, otherwise a tuple:
+
+                - `sample` (`torch.Tensor`): Output latent image of shape `(B, C, H, W)`.
+        """
         if attention_kwargs is not None:
             attention_kwargs = attention_kwargs.copy()
             lora_scale = attention_kwargs.pop("scale", 1.0)
@@ -491,8 +820,8 @@ class MirageTransformer2DModel(ModelMixin, ConfigMixin):
                 logger.warning(
                     "Passing `scale` via `attention_kwargs` when not using the PEFT backend is ineffective."
                 )
-        img_seq, txt, pe = self.process_inputs(image_latent, cross_attn_conditioning)
-        img_seq = self.forward_transformers(img_seq, txt, timestep, pe=pe, attention_mask=cross_attn_mask)
+        img_seq, txt, pe = self._process_inputs(image_latent, cross_attn_conditioning)
+        img_seq = self._forward_transformers(img_seq, txt, timestep, pe=pe, attention_mask=cross_attn_mask)
         output = seq2img(img_seq, self.patch_size, image_latent.shape)
         if USE_PEFT_BACKEND:
             # remove `lora_scale` from each PEFT layer
