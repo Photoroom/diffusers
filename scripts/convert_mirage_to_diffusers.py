@@ -6,11 +6,12 @@ Script to convert Mirage checkpoint from original codebase to diffusers format.
 import argparse
 import json
 import os
-import shutil
 import sys
 
 import torch
 from safetensors.torch import save_file
+from dataclasses import dataclass, asdict
+from typing import Tuple, Dict
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -18,35 +19,53 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from diffusers.models.transformers.transformer_mirage import MirageTransformer2DModel
 from diffusers.pipelines.mirage import MiragePipeline
 
+@dataclass(frozen=True)
+class MirageBase:
+    context_in_dim: int = 2304
+    hidden_size: int = 1792
+    mlp_ratio: float = 3.5
+    num_heads: int = 28
+    depth: int = 16
+    axes_dim: Tuple[int, int] = (32, 32)
+    theta: int = 10_000
+    time_factor: float = 1000.0
+    time_max_period: int = 10_000
 
-def load_reference_config(vae_type: str) -> dict:
-    """Load transformer config from existing pipeline checkpoint."""
 
+@dataclass(frozen=True)
+class MirageFlux(MirageBase):
+    in_channels: int = 16
+    patch_size: int = 2
+
+
+@dataclass(frozen=True)
+class MirageDCAE(MirageBase):
+    in_channels: int = 32
+    patch_size: int = 1
+
+
+def build_config(vae_type: str) -> dict:
     if vae_type == "flux":
-        config_path = "/raid/shared/storage/home/davidb/diffusers/diffusers_pipeline_checkpoints/pipeline_checkpoint_fluxvae_gemmaT5_updated/transformer/config.json"
+        cfg = MirageFlux()
     elif vae_type == "dc-ae":
-        config_path = "/raid/shared/storage/home/davidb/diffusers/diffusers_pipeline_checkpoints/pipeline_checkpoint_dcae_gemmaT5_updated/transformer/config.json"
+        cfg = MirageDCAE()
     else:
         raise ValueError(f"Unsupported VAE type: {vae_type}. Use 'flux' or 'dc-ae'")
 
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Reference config not found: {config_path}")
-
-    with open(config_path, "r") as f:
-        config = json.load(f)
-
-    print(f"✓ Loaded {vae_type} config: in_channels={config['in_channels']}")
-    return config
+    config_dict = asdict(cfg)
+    config_dict["axes_dim"] = list(config_dict["axes_dim"])  # type: ignore[index]
+    return config_dict
 
 
-def create_parameter_mapping() -> dict:
+
+def create_parameter_mapping(depth: int) -> dict:
     """Create mapping from old parameter names to new diffusers names."""
 
     # Key mappings for structural changes
     mapping = {}
 
     # RMSNorm: scale -> weight
-    for i in range(16):  # 16 layers
+    for i in range(depth):
         mapping[f"blocks.{i}.qk_norm.query_norm.scale"] = f"blocks.{i}.qk_norm.query_norm.weight"
         mapping[f"blocks.{i}.qk_norm.key_norm.scale"] = f"blocks.{i}.qk_norm.key_norm.weight"
         mapping[f"blocks.{i}.k_norm.scale"] = f"blocks.{i}.k_norm.weight"
@@ -57,12 +76,12 @@ def create_parameter_mapping() -> dict:
     return mapping
 
 
-def convert_checkpoint_parameters(old_state_dict: dict) -> dict:
+def convert_checkpoint_parameters(old_state_dict: Dict[str, torch.Tensor], depth: int) -> Dict[str, torch.Tensor]:
     """Convert old checkpoint parameters to new diffusers format."""
 
     print("Converting checkpoint parameters...")
 
-    mapping = create_parameter_mapping()
+    mapping = create_parameter_mapping(depth)
     converted_state_dict = {}
 
     # First, print available keys to understand structure
@@ -135,7 +154,8 @@ def create_transformer_from_checkpoint(checkpoint_path: str, config: dict) -> Mi
     print(f"✓ Loaded checkpoint with {len(state_dict)} parameters")
 
     # Convert parameter names if needed
-    converted_state_dict = convert_checkpoint_parameters(state_dict)
+    model_depth = int(config.get("depth", 16))
+    converted_state_dict = convert_checkpoint_parameters(state_dict, depth=model_depth)
 
     # Create transformer with config
     print("Creating MirageTransformer2DModel...")
@@ -156,28 +176,164 @@ def create_transformer_from_checkpoint(checkpoint_path: str, config: dict) -> Mi
     return transformer
 
 
-def copy_pipeline_components(vae_type: str, output_path: str):
-    """Copy VAE, scheduler, text encoder, and tokenizer from reference pipeline."""
+
+
+def create_scheduler_config(output_path: str):
+    """Create FlowMatchEulerDiscreteScheduler config."""
+
+    scheduler_config = {
+        "_class_name": "FlowMatchEulerDiscreteScheduler",
+        "num_train_timesteps": 1000,
+        "shift": 1.0
+    }
+
+    scheduler_path = os.path.join(output_path, "scheduler")
+    os.makedirs(scheduler_path, exist_ok=True)
+
+    with open(os.path.join(scheduler_path, "scheduler_config.json"), "w") as f:
+        json.dump(scheduler_config, f, indent=2)
+
+    print("✓ Created scheduler config")
+
+
+def create_vae_config(vae_type: str, output_path: str):
+    """Create VAE config based on type."""
 
     if vae_type == "flux":
-        ref_pipeline = "/raid/shared/storage/home/davidb/diffusers/diffusers_pipeline_checkpoints/pipeline_checkpoint_fluxvae_gemmaT5_updated"
+        vae_config = {
+            "_class_name": "AutoencoderKL",
+            "latent_channels": 16,
+            "block_out_channels": [128, 256, 512, 512],
+            "down_block_types": [
+                "DownEncoderBlock2D",
+                "DownEncoderBlock2D",
+                "DownEncoderBlock2D",
+                "DownEncoderBlock2D"
+            ],
+            "up_block_types": [
+                "UpDecoderBlock2D",
+                "UpDecoderBlock2D",
+                "UpDecoderBlock2D",
+                "UpDecoderBlock2D"
+            ],
+            "scaling_factor": 0.3611,
+            "shift_factor": 0.1159,
+            "use_post_quant_conv": False,
+            "use_quant_conv": False
+        }
     else:  # dc-ae
-        ref_pipeline = "/raid/shared/storage/home/davidb/diffusers/diffusers_pipeline_checkpoints/pipeline_checkpoint_dcae_gemmaT5_updated"
+        vae_config = {
+            "_class_name": "AutoencoderDC",
+            "latent_channels": 32,
+            "encoder_block_out_channels": [128, 256, 512, 512, 1024, 1024],
+            "decoder_block_out_channels": [128, 256, 512, 512, 1024, 1024],
+            "encoder_block_types": [
+                "ResBlock",
+                "ResBlock",
+                "ResBlock",
+                "EfficientViTBlock",
+                "EfficientViTBlock",
+                "EfficientViTBlock"
+            ],
+            "decoder_block_types": [
+                "ResBlock",
+                "ResBlock",
+                "ResBlock",
+                "EfficientViTBlock",
+                "EfficientViTBlock",
+                "EfficientViTBlock"
+            ],
+            "encoder_layers_per_block": [2, 2, 2, 3, 3, 3],
+            "decoder_layers_per_block": [3, 3, 3, 3, 3, 3],
+            "encoder_qkv_multiscales": [[], [], [], [5], [5], [5]],
+            "decoder_qkv_multiscales": [[], [], [], [5], [5], [5]],
+            "scaling_factor": 0.41407,
+            "upsample_block_type": "interpolate"
+        }
 
-    components = ["vae", "scheduler", "text_encoder", "tokenizer"]
+    vae_path = os.path.join(output_path, "vae")
+    os.makedirs(vae_path, exist_ok=True)
 
-    for component in components:
-        src_path = os.path.join(ref_pipeline, component)
-        dst_path = os.path.join(output_path, component)
+    with open(os.path.join(vae_path, "config.json"), "w") as f:
+        json.dump(vae_config, f, indent=2)
 
-        if os.path.exists(src_path):
-            if os.path.isdir(src_path):
-                shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
-            else:
-                shutil.copy2(src_path, dst_path)
-            print(f"✓ Copied {component}")
-        else:
-            print(f"⚠ Component not found: {src_path}")
+    print("✓ Created VAE config")
+
+
+def create_text_encoder_config(output_path: str):
+    """Create T5GemmaEncoder config."""
+
+    text_encoder_config = {
+        "model_name": "google/t5gemma-2b-2b-ul2",
+        "model_max_length": 256,
+        "use_attn_mask": True,
+        "use_last_hidden_state": True
+    }
+
+    text_encoder_path = os.path.join(output_path, "text_encoder")
+    os.makedirs(text_encoder_path, exist_ok=True)
+
+    with open(os.path.join(text_encoder_path, "config.json"), "w") as f:
+        json.dump(text_encoder_config, f, indent=2)
+
+    print("✓ Created text encoder config")
+
+
+def create_tokenizer_config(output_path: str):
+    """Create GemmaTokenizerFast config and files."""
+
+    tokenizer_config = {
+        "add_bos_token": False,
+        "add_eos_token": False,
+        "added_tokens_decoder": {
+            "0": {"content": "<pad>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True},
+            "1": {"content": "<eos>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True},
+            "2": {"content": "<bos>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True},
+            "3": {"content": "<unk>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True},
+            "106": {"content": "<start_of_turn>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True},
+            "107": {"content": "<end_of_turn>", "lstrip": False, "normalized": False, "rstrip": False, "single_word": False, "special": True}
+        },
+        "additional_special_tokens": ["<start_of_turn>", "<end_of_turn>"],
+        "bos_token": "<bos>",
+        "clean_up_tokenization_spaces": False,
+        "eos_token": "<eos>",
+        "extra_special_tokens": {},
+        "model_max_length": 256,
+        "pad_token": "<pad>",
+        "padding_side": "right",
+        "sp_model_kwargs": {},
+        "spaces_between_special_tokens": False,
+        "tokenizer_class": "GemmaTokenizer",
+        "unk_token": "<unk>",
+        "use_default_system_prompt": False
+    }
+
+    special_tokens_map = {
+        "bos_token": "<bos>",
+        "eos_token": "<eos>",
+        "pad_token": "<pad>",
+        "unk_token": "<unk>"
+    }
+
+    tokenizer_path = os.path.join(output_path, "tokenizer")
+    os.makedirs(tokenizer_path, exist_ok=True)
+
+    with open(os.path.join(tokenizer_path, "tokenizer_config.json"), "w") as f:
+        json.dump(tokenizer_config, f, indent=2)
+
+    with open(os.path.join(tokenizer_path, "special_tokens_map.json"), "w") as f:
+        json.dump(special_tokens_map, f, indent=2)
+
+    print("✓ Created tokenizer config (Note: tokenizer.json and tokenizer.model files need to be provided separately)")
+
+
+def create_pipeline_components(vae_type: str, output_path: str):
+    """Create all pipeline components with proper configs."""
+
+    create_scheduler_config(output_path)
+    create_vae_config(vae_type, output_path)
+    create_text_encoder_config(output_path)
+    create_tokenizer_config(output_path)
 
 
 def create_model_index(vae_type: str, output_path: str):
@@ -211,8 +367,7 @@ def main(args):
     if not os.path.exists(args.checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint_path}")
 
-    # Load reference config based on VAE type
-    config = load_reference_config(args.vae_type)
+    config = build_config(args.vae_type)
 
     # Create output directory
     os.makedirs(args.output_path, exist_ok=True)
@@ -234,8 +389,8 @@ def main(args):
     save_file(state_dict, os.path.join(transformer_path, "diffusion_pytorch_model.safetensors"))
     print(f"✓ Saved transformer to {transformer_path}")
 
-    # Copy other pipeline components
-    copy_pipeline_components(args.vae_type, args.output_path)
+    # Create other pipeline components
+    create_pipeline_components(args.vae_type, args.output_path)
 
     # Create model index
     create_model_index(args.vae_type, args.output_path)
