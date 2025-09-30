@@ -19,6 +19,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from diffusers.models.transformers.transformer_mirage import MirageTransformer2DModel
 from diffusers.pipelines.mirage import MiragePipeline
 
+DEFAULT_HEIGHT = 512
+DEFAULT_WIDTH = 512
+
 @dataclass(frozen=True)
 class MirageBase:
     context_in_dim: int = 2304
@@ -197,9 +200,13 @@ def create_model_index(vae_type: str, output_path: str):
     if vae_type == "flux":
         vae_model_name = "black-forest-labs/FLUX.1-dev"
         vae_subfolder = "vae"
+        default_height = DEFAULT_HEIGHT
+        default_width = DEFAULT_WIDTH
     else:  # dc-ae
         vae_model_name = "mit-han-lab/dc-ae-f32c32-sana-1.0-diffusers"
         vae_subfolder = None
+        default_height = DEFAULT_HEIGHT
+        default_width = DEFAULT_WIDTH
 
     # Text encoder and tokenizer always use T5Gemma
     text_model_name = "google/t5gemma-2b-2b-ul2"
@@ -214,6 +221,8 @@ def create_model_index(vae_type: str, output_path: str):
         "transformer": ["diffusers", "MirageTransformer2DModel"],
         "vae": vae_model_name,
         "vae_subfolder": vae_subfolder,
+        "default_height": default_height,
+        "default_width": default_width,
     }
 
     model_index_path = os.path.join(output_path, "model_index.json")
