@@ -31,7 +31,7 @@ from transformers import (
 from ...image_processor import VaeImageProcessor
 from ...loaders import FromSingleFileMixin, LoraLoaderMixin, TextualInversionLoaderMixin
 from ...models import AutoencoderDC, AutoencoderKL
-from ...models.transformers.transformer_mirage import seq2img
+from ...models.transformers.transformer_mirage import MirageTransformer2DModel, seq2img
 from ...schedulers import FlowMatchEulerDiscreteScheduler
 from ...utils import (
     logging,
@@ -41,11 +41,6 @@ from ...utils.torch_utils import randn_tensor
 from ..pipeline_utils import DiffusionPipeline
 from .pipeline_output import MiragePipelineOutput
 
-
-try:
-    from ...models.transformers.transformer_mirage import MirageTransformer2DModel
-except ImportError:
-    MirageTransformer2DModel = None
 
 DEFAULT_HEIGHT = 512
 DEFAULT_WIDTH = 512
