@@ -31,6 +31,7 @@ from transformers import (
 from ...image_processor import VaeImageProcessor
 from ...loaders import FromSingleFileMixin, LoraLoaderMixin, TextualInversionLoaderMixin
 from ...models import AutoencoderDC, AutoencoderKL
+from ...models.transformers.transformer_mirage import seq2img
 from ...schedulers import FlowMatchEulerDiscreteScheduler
 from ...utils import (
     logging,
@@ -45,6 +46,9 @@ try:
     from ...models.transformers.transformer_mirage import MirageTransformer2DModel
 except ImportError:
     MirageTransformer2DModel = None
+
+DEFAULT_HEIGHT = 512
+DEFAULT_WIDTH = 512
 
 logger = logging.get_logger(__name__)
 
@@ -267,6 +271,8 @@ class MiragePipeline(
         vae_subfolder = model_index.get("vae_subfolder")
         text_model_name = model_index.get("text_encoder")
         tokenizer_model_name = model_index.get("tokenizer")
+        default_height = model_index.get("default_height", DEFAULT_HEIGHT)
+        default_width = model_index.get("default_width", DEFAULT_WIDTH)
 
         logger.info(f"Loading VAE from {vae_model_name}...")
         if "FLUX" in vae_model_name or "flux" in vae_model_name:
@@ -300,6 +306,10 @@ class MiragePipeline(
             tokenizer=tokenizer,
             vae=vae,
         )
+
+        # Store default dimensions as pipeline attributes
+        pipeline.default_height = default_height
+        pipeline.default_width = default_width
 
         return pipeline
 
@@ -558,8 +568,8 @@ class MiragePipeline(
         """
 
         # 0. Default height and width to transformer config
-        height = height or 256
-        width = width or 256
+        height = height or getattr(self, 'default_height', DEFAULT_HEIGHT)
+        width = width or getattr(self, 'default_width', DEFAULT_WIDTH)
 
         # 1. Check inputs
         self.check_inputs(
@@ -642,8 +652,6 @@ class MiragePipeline(
                 )
 
                 # Convert back to image format
-                from ...models.transformers.transformer_mirage import seq2img
-
                 noise_both = seq2img(img_seq, self.transformer.patch_size, latents_in.shape)
 
                 # Apply CFG
