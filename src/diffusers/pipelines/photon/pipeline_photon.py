@@ -31,7 +31,7 @@ from transformers import (
 from ...image_processor import VaeImageProcessor
 from ...loaders import FromSingleFileMixin, LoraLoaderMixin, TextualInversionLoaderMixin
 from ...models import AutoencoderDC, AutoencoderKL
-from ...models.transformers.transformer_mirage import MirageTransformer2DModel, seq2img
+from ...models.transformers.transformer_photon import PhotonTransformer2DModel, seq2img
 from ...schedulers import FlowMatchEulerDiscreteScheduler
 from ...utils import (
     logging,
@@ -39,7 +39,7 @@ from ...utils import (
 )
 from ...utils.torch_utils import randn_tensor
 from ..pipeline_utils import DiffusionPipeline
-from .pipeline_output import MiragePipelineOutput
+from .pipeline_output import PhotonPipelineOutput
 
 
 DEFAULT_HEIGHT = 512
@@ -49,7 +49,7 @@ logger = logging.get_logger(__name__)
 
 
 class TextPreprocessor:
-    """Text preprocessing utility for MiragePipeline."""
+    """Text preprocessing utility for PhotonPipeline."""
 
     def __init__(self):
         """Initialize text preprocessor."""
@@ -179,15 +179,15 @@ EXAMPLE_DOC_STRING = """
     Examples:
         ```py
         >>> import torch
-        >>> from diffusers import MiragePipeline
+        >>> from diffusers import PhotonPipeline
         >>> from diffusers.models import AutoencoderKL, AutoencoderDC
         >>> from transformers import T5GemmaModel, GemmaTokenizerFast
 
         >>> # Load pipeline directly with from_pretrained
-        >>> pipe = MiragePipeline.from_pretrained("path/to/mirage_checkpoint")
+        >>> pipe = PhotonPipeline.from_pretrained("path/to/photon_checkpoint")
 
         >>> # Or initialize pipeline components manually
-        >>> transformer = MirageTransformer2DModel.from_pretrained("path/to/transformer")
+        >>> transformer = PhotonTransformer2DModel.from_pretrained("path/to/transformer")
         >>> scheduler = FlowMatchEulerDiscreteScheduler()
         >>> # Load T5Gemma encoder
         >>> t5gemma_model = T5GemmaModel.from_pretrained("google/t5gemma-2b-2b-ul2")
@@ -195,7 +195,7 @@ EXAMPLE_DOC_STRING = """
         >>> tokenizer = GemmaTokenizerFast.from_pretrained("google/t5gemma-2b-2b-ul2")
         >>> vae = AutoencoderKL.from_pretrained("black-forest-labs/FLUX.1-dev", subfolder="vae")
 
-        >>> pipe = MiragePipeline(
+        >>> pipe = PhotonPipeline(
         ...     transformer=transformer,
         ...     scheduler=scheduler,
         ...     text_encoder=text_encoder,
@@ -205,26 +205,26 @@ EXAMPLE_DOC_STRING = """
         >>> pipe.to("cuda")
         >>> prompt = "A digital painting of a rusty, vintage tram on a sandy beach"
         >>> image = pipe(prompt, num_inference_steps=28, guidance_scale=4.0).images[0]
-        >>> image.save("mirage_output.png")
+        >>> image.save("photon_output.png")
         ```
 """
 
 
-class MiragePipeline(
+class PhotonPipeline(
     DiffusionPipeline,
     LoraLoaderMixin,
     FromSingleFileMixin,
     TextualInversionLoaderMixin,
 ):
     r"""
-    Pipeline for text-to-image generation using Mirage Transformer.
+    Pipeline for text-to-image generation using Photon Transformer.
 
     This model inherits from [`DiffusionPipeline`]. Check the superclass documentation for the generic methods the
     library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
 
     Args:
-        transformer ([`MirageTransformer2DModel`]):
-            The Mirage transformer model to denoise the encoded image latents.
+        transformer ([`PhotonTransformer2DModel`]):
+            The Photon transformer model to denoise the encoded image latents.
         scheduler ([`FlowMatchEulerDiscreteScheduler`]):
             A scheduler to be used in combination with `transformer` to denoise the encoded image latents.
         text_encoder ([`T5EncoderModel`]):
@@ -248,7 +248,7 @@ class MiragePipeline(
         """
         Override from_pretrained to load VAE and text encoder from HuggingFace models.
 
-        The MiragePipeline checkpoints only store transformer and scheduler locally.
+        The PhotonPipeline checkpoints only store transformer and scheduler locally.
         VAE and text encoder are loaded from external HuggingFace models as specified
         in model_index.json.
         """
@@ -285,7 +285,7 @@ class MiragePipeline(
 
         # Load transformer and scheduler from local checkpoint
         logger.info(f"Loading transformer from {pretrained_model_name_or_path}...")
-        transformer = MirageTransformer2DModel.from_pretrained(
+        transformer = PhotonTransformer2DModel.from_pretrained(
             pretrained_model_name_or_path, subfolder="transformer"
         )
 
@@ -310,7 +310,7 @@ class MiragePipeline(
 
     def __init__(
         self,
-        transformer: MirageTransformer2DModel,
+        transformer: PhotonTransformer2DModel,
         scheduler: FlowMatchEulerDiscreteScheduler,
         text_encoder: Union[T5EncoderModel, Any],
         tokenizer: Union[T5TokenizerFast, GemmaTokenizerFast, AutoTokenizer],
@@ -318,9 +318,9 @@ class MiragePipeline(
     ):
         super().__init__()
 
-        if MirageTransformer2DModel is None:
+        if PhotonTransformer2DModel is None:
             raise ImportError(
-                "MirageTransformer2DModel is not available. Please ensure the transformer_mirage module is properly installed."
+                "PhotonTransformer2DModel is not available. Please ensure the transformer_photon module is properly installed."
             )
 
         self.text_encoder = text_encoder
@@ -544,7 +544,7 @@ class MiragePipeline(
                 The output format of the generate image. Choose between
                 [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or `np.array`.
             return_dict (`bool`, *optional*, defaults to `True`):
-                Whether or not to return a [`~pipelines.mirage.MiragePipelineOutput`] instead of a plain tuple.
+                Whether or not to return a [`~pipelines.photon.PhotonPipelineOutput`] instead of a plain tuple.
             callback_on_step_end (`Callable`, *optional*):
                 A function that calls at the end of each denoising steps during the inference. The function is called
                 with the following arguments: `callback_on_step_end(self, step, timestep, callback_kwargs)`.
@@ -557,7 +557,7 @@ class MiragePipeline(
         Examples:
 
         Returns:
-            [`~pipelines.mirage.MiragePipelineOutput`] or `tuple`: [`~pipelines.mirage.MiragePipelineOutput`] if
+            [`~pipelines.photon.PhotonPipelineOutput`] or `tuple`: [`~pipelines.photon.PhotonPipelineOutput`] if
             `return_dict` is True, otherwise a `tuple. When returning a tuple, the first element is a list with the
             generated images.
         """
@@ -683,4 +683,4 @@ class MiragePipeline(
         if not return_dict:
             return (image,)
 
-        return MiragePipelineOutput(images=image)
+        return PhotonPipelineOutput(images=image)

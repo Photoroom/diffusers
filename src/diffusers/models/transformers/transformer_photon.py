@@ -23,7 +23,7 @@ from torch.nn.functional import fold, unfold
 
 from ...configuration_utils import ConfigMixin, register_to_config
 from ...utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
-from ..attention_processor import Attention, AttentionProcessor, MirageAttnProcessor2_0
+from ..attention_processor import Attention, AttentionProcessor, PhotonAttnProcessor2_0
 from ..embeddings import get_timestep_embedding
 from ..modeling_outputs import Transformer2DModelOutput
 from ..modeling_utils import ModelMixin
@@ -206,7 +206,7 @@ class Modulation(nn.Module):
         return ModulationOut(*out[:3]), ModulationOut(*out[3:])
 
 
-class MirageBlock(nn.Module):
+class PhotonBlock(nn.Module):
     r"""
     Multimodal transformer block with text–image cross-attention, modulation, and MLP.
 
@@ -304,7 +304,7 @@ class MirageBlock(nn.Module):
             dim_head=self.head_dim,
             bias=False,
             out_bias=False,
-            processor=MirageAttnProcessor2_0(),
+            processor=PhotonAttnProcessor2_0(),
         )
 
         # mlp
@@ -538,7 +538,7 @@ def seq2img(seq: Tensor, patch_size: int, shape: Tensor) -> Tensor:
     return fold(seq.transpose(1, 2), shape, kernel_size=patch_size, stride=patch_size)
 
 
-class MirageTransformer2DModel(ModelMixin, ConfigMixin):
+class PhotonTransformer2DModel(ModelMixin, ConfigMixin):
     r"""
     Transformer-based 2D model for text to image generation.
     It supports attention processor injection and LoRA scaling.
@@ -581,7 +581,7 @@ class MirageTransformer2DModel(ModelMixin, ConfigMixin):
         txt_in (`nn.Linear`):
             Projection layer for text conditioning.
         blocks (`nn.ModuleList`):
-            Stack of transformer blocks (`MirageBlock`).
+            Stack of transformer blocks (`PhotonBlock`).
         final_layer (`LastLayer`):
             Projection layer mapping hidden tokens back to patch outputs.
 
@@ -656,7 +656,7 @@ class MirageTransformer2DModel(ModelMixin, ConfigMixin):
 
         self.blocks = nn.ModuleList(
             [
-                MirageBlock(
+                PhotonBlock(
                     self.hidden_size,
                     self.num_heads,
                     mlp_ratio=mlp_ratio,
@@ -781,7 +781,7 @@ class MirageTransformer2DModel(ModelMixin, ConfigMixin):
         return_dict: bool = True,
     ) -> Union[Tuple[torch.Tensor, ...], Transformer2DModelOutput]:
         r"""
-        Forward pass of the MirageTransformer2DModel.
+        Forward pass of the PhotonTransformer2DModel.
 
         The latent image is split into patch tokens, combined with text conditioning,
         and processed through a stack of transformer blocks modulated by the timestep.

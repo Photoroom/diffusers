@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License. -->
 
-# MiragePipeline
+# PhotonPipeline
 
 <div class="flex flex-wrap space-x-1">
   <img alt="LoRA" src="https://img.shields.io/badge/LoRA-d8b4fe?style=flat"/>
 </div>
 
-Mirage is a text-to-image diffusion model using a transformer-based architecture with flow matching for efficient high-quality image generation. The model uses T5Gemma as the text encoder and supports both Flux VAE (AutoencoderKL) and DC-AE (AutoencoderDC) for latent compression.
+Photon is a text-to-image diffusion model using a transformer-based architecture with flow matching for efficient high-quality image generation. The model uses T5Gemma as the text encoder and supports both Flux VAE (AutoencoderKL) and DC-AE (AutoencoderDC) for latent compression.
 
 Key features:
 
@@ -31,18 +31,18 @@ Key features:
 
 ## Loading the Pipeline
 
-Mirage checkpoints only store the transformer and scheduler weights locally. The VAE and text encoder are automatically loaded from HuggingFace during pipeline initialization:
+Photon checkpoints only store the transformer and scheduler weights locally. The VAE and text encoder are automatically loaded from HuggingFace during pipeline initialization:
 
 ```py
-from diffusers import MiragePipeline
+from diffusers import PhotonPipeline
 
 # Load pipeline - VAE and text encoder will be loaded from HuggingFace
-pipe = MiragePipeline.from_pretrained("path/to/mirage_checkpoint")
+pipe = PhotonPipeline.from_pretrained("path/to/photon_checkpoint")
 pipe.to("cuda")
 
 prompt = "A vibrant night sky filled with colorful fireworks, with one large firework burst forming the glowing text “Photon” in bright, sparkling light"
 image = pipe(prompt, num_inference_steps=28, guidance_scale=4.0).images[0]
-image.save("mirage_output.png")
+image.save("photon_output.png")
 ```
 
 ### Manual Component Loading
@@ -51,14 +51,14 @@ You can also load components individually:
 
 ```py
 import torch
-from diffusers import MiragePipeline
+from diffusers import PhotonPipeline
 from diffusers.models import AutoencoderKL, AutoencoderDC
-from diffusers.models.transformers.transformer_mirage import MirageTransformer2DModel
+from diffusers.models.transformers.transformer_photon import PhotonTransformer2DModel
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from transformers import T5GemmaModel, GemmaTokenizerFast
 
 # Load transformer
-transformer = MirageTransformer2DModel.from_pretrained(
+transformer = PhotonTransformer2DModel.from_pretrained(
     "path/to/checkpoint", subfolder="transformer"
 )
 
@@ -78,7 +78,7 @@ vae = AutoencoderKL.from_pretrained("black-forest-labs/FLUX.1-dev", subfolder="v
 # Or DC-AE (32 latent channels):
 # vae = AutoencoderDC.from_pretrained("mit-han-lab/dc-ae-f32c32-sana-1.0-diffusers")
 
-pipe = MiragePipeline(
+pipe = PhotonPipeline(
     transformer=transformer,
     scheduler=scheduler,
     text_encoder=text_encoder,
@@ -90,7 +90,7 @@ pipe.to("cuda")
 
 ## VAE Variants
 
-Mirage supports two VAE configurations:
+Photon supports two VAE configurations:
 
 ### Flux VAE (AutoencoderKL)
 - **Compression**: 8x spatial compression
@@ -132,21 +132,21 @@ For memory-constrained environments:
 
 ```py
 import torch
-from diffusers import MiragePipeline
+from diffusers import PhotonPipeline
 
-pipe = MiragePipeline.from_pretrained("path/to/checkpoint", torch_dtype=torch.float16)
+pipe = PhotonPipeline.from_pretrained("path/to/checkpoint", torch_dtype=torch.float16)
 pipe.enable_model_cpu_offload()  # Offload components to CPU when not in use
 
 # Or use sequential CPU offload for even lower memory
 pipe.enable_sequential_cpu_offload()
 ```
 
-## MiragePipeline
+## PhotonPipeline
 
-[[autodoc]] MiragePipeline
+[[autodoc]] PhotonPipeline
   - all
   - __call__
 
-## MiragePipelineOutput
+## PhotonPipelineOutput
 
-[[autodoc]] pipelines.mirage.pipeline_output.MiragePipelineOutput
+[[autodoc]] pipelines.photon.pipeline_output.PhotonPipelineOutput
