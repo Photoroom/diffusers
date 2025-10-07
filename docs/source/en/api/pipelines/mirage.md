@@ -22,18 +22,12 @@ Mirage is a text-to-image diffusion model using a transformer-based architecture
 
 Key features:
 
-- **Transformer Architecture**: Uses a modern transformer-based denoising model with attention mechanisms optimized for image generation
-- **Flow Matching**: Employs flow matching with Euler discrete scheduling for efficient sampling
+- **Simplified MMDIT architecture**: Uses a simplified MMDIT architecture for image generation where text tokens are not updated through the transformer blocks
+- **Flow Matching**: Employs flow matching with discrete scheduling for efficient sampling
 - **Flexible VAE Support**: Compatible with both Flux VAE (8x compression, 16 latent channels) and DC-AE (32x compression, 32 latent channels)
-- **T5Gemma Text Encoder**: Uses Google's T5Gemma-2B-2B-UL2 model for text encoding with strong text-image alignment
+- **T5Gemma Text Encoder**: Uses Google's T5Gemma-2B-2B-UL2 model for text encoding offering multiple language support
 - **Efficient Architecture**: ~1.3B parameters in the transformer, enabling fast inference while maintaining quality
-- **Modular Design**: Text encoder and VAE weights are loaded from HuggingFace, keeping checkpoint sizes small
 
-<Tip>
-
-Make sure to check out the Schedulers [guide](../../using-diffusers/schedulers) to learn how to explore the tradeoff between scheduler speed and quality, and see the [reuse components across pipelines](../../using-diffusers/loading#reuse-a-pipeline) section to learn how to efficiently load the same components into multiple pipelines.
-
-</Tip>
 
 ## Loading the Pipeline
 
@@ -46,7 +40,7 @@ from diffusers import MiragePipeline
 pipe = MiragePipeline.from_pretrained("path/to/mirage_checkpoint")
 pipe.to("cuda")
 
-prompt = "A digital painting of a rusty, vintage tram on a sandy beach"
+prompt = "A vibrant night sky filled with colorful fireworks, with one large firework burst forming the glowing text “Photon” in bright, sparkling light"
 image = pipe(prompt, num_inference_steps=28, guidance_scale=4.0).images[0]
 image.save("mirage_output.png")
 ```
@@ -123,11 +117,11 @@ Key parameters for image generation:
 ```py
 # Example with custom parameters
 image = pipe(
-    prompt="A serene mountain landscape at sunset",
+    prompt="A vibrant night sky filled with colorful fireworks, with one large firework burst forming the glowing text “Photon” in bright, sparkling light",
     num_inference_steps=28,
     guidance_scale=4.0,
-    height=1024,
-    width=1024,
+    height=512,
+    width=512,
     generator=torch.Generator("cuda").manual_seed(42)
 ).images[0]
 ```
