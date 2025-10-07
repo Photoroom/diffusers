@@ -22,9 +22,9 @@ from ...utils import BaseOutput
 
 
 @dataclass
-class MiragePipelineOutput(BaseOutput):
+class PhotonPipelineOutput(BaseOutput):
     """
-    Output class for Mirage pipelines.
+    Output class for Photon pipelines.
 
     Args:
         images (`List[PIL.Image.Image]` or `np.ndarray`)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script to convert Mirage checkpoint from original codebase to diffusers format.
+Script to convert Photon checkpoint from original codebase to diffusers format.
 """
 
 import argparse
@@ -16,14 +16,14 @@ from typing import Tuple, Dict
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from diffusers.models.transformers.transformer_mirage import MirageTransformer2DModel
-from diffusers.pipelines.mirage import MiragePipeline
+from diffusers.models.transformers.transformer_photon import PhotonTransformer2DModel
+from diffusers.pipelines.photon import PhotonPipeline
 
 DEFAULT_HEIGHT = 512
 DEFAULT_WIDTH = 512
 
 @dataclass(frozen=True)
-class MirageBase:
+class PhotonBase:
     context_in_dim: int = 2304
     hidden_size: int = 1792
     mlp_ratio: float = 3.5
@@ -36,22 +36,22 @@ class MirageBase:
 
 
 @dataclass(frozen=True)
-class MirageFlux(MirageBase):
+class PhotonFlux(PhotonBase):
     in_channels: int = 16
     patch_size: int = 2
 
 
 @dataclass(frozen=True)
-class MirageDCAE(MirageBase):
+class PhotonDCAE(PhotonBase):
     in_channels: int = 32
     patch_size: int = 1
 
 
 def build_config(vae_type: str) -> dict:
     if vae_type == "flux":
-        cfg = MirageFlux()
+        cfg = PhotonFlux()
     elif vae_type == "dc-ae":
-        cfg = MirageDCAE()
+        cfg = PhotonDCAE()
     else:
         raise ValueError(f"Unsupported VAE type: {vae_type}. Use 'flux' or 'dc-ae'")
 
@@ -125,8 +125,8 @@ def convert_checkpoint_parameters(old_state_dict: Dict[str, torch.Tensor], depth
     return converted_state_dict
 
 
-def create_transformer_from_checkpoint(checkpoint_path: str, config: dict) -> MirageTransformer2DModel:
-    """Create and load MirageTransformer2DModel from old checkpoint."""
+def create_transformer_from_checkpoint(checkpoint_path: str, config: dict) -> PhotonTransformer2DModel:
+    """Create and load PhotonTransformer2DModel from old checkpoint."""
 
     print(f"Loading checkpoint from: {checkpoint_path}")
 
@@ -154,8 +154,8 @@ def create_transformer_from_checkpoint(checkpoint_path: str, config: dict) -> Mi
     converted_state_dict = convert_checkpoint_parameters(state_dict, depth=model_depth)
 
     # Create transformer with config
-    print("Creating MirageTransformer2DModel...")
-    transformer = MirageTransformer2DModel(**config)
+    print("Creating PhotonTransformer2DModel...")
+    transformer = PhotonTransformer2DModel(**config)
 
     # Load state dict
     print("Loading converted parameters...")
@@ -212,13 +212,13 @@ def create_model_index(vae_type: str, output_path: str):
     text_model_name = "google/t5gemma-2b-2b-ul2"
 
     model_index = {
-        "_class_name": "MiragePipeline",
+        "_class_name": "PhotonPipeline",
         "_diffusers_version": "0.31.0.dev0",
         "_name_or_path": os.path.basename(output_path),
         "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
         "text_encoder": text_model_name,
         "tokenizer": text_model_name,
-        "transformer": ["diffusers", "MirageTransformer2DModel"],
+        "transformer": ["diffusers", "PhotonTransformer2DModel"],
         "vae": vae_model_name,
         "vae_subfolder": vae_subfolder,
         "default_height": default_height,
@@ -262,7 +262,7 @@ def main(args):
 
     # Verify the pipeline can be loaded
     try:
-        pipeline = MiragePipeline.from_pretrained(args.output_path)
+        pipeline = PhotonPipeline.from_pretrained(args.output_path)
         print("Pipeline loaded successfully!")
         print(f"Transformer: {type(pipeline.transformer).__name__}")
         print(f"VAE: {type(pipeline.vae).__name__}")
@@ -285,10 +285,10 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert Mirage checkpoint to diffusers format")
+    parser = argparse.ArgumentParser(description="Convert Photon checkpoint to diffusers format")
 
     parser.add_argument(
-        "--checkpoint_path", type=str, required=True, help="Path to the original Mirage checkpoint (.pth file)"
+        "--checkpoint_path", type=str, required=True, help="Path to the original Photon checkpoint (.pth file)"
     )
 
     parser.add_argument(

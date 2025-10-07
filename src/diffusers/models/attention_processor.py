@@ -5609,15 +5609,15 @@ class XLAFluxFlashAttnProcessor2_0:
         return processor
 
 
-class MirageAttnProcessor2_0:
+class PhotonAttnProcessor2_0:
     r"""
-    Processor for implementing Mirage-style attention with multi-source tokens and RoPE.
-    Properly integrates with diffusers Attention module while handling Mirage-specific logic.
+    Processor for implementing Photon-style attention with multi-source tokens and RoPE.
+    Properly integrates with diffusers Attention module while handling Photon-specific logic.
     """
 
     def __init__(self):
         if not hasattr(torch.nn.functional, "scaled_dot_product_attention"):
-            raise ImportError("MirageAttnProcessor2_0 requires PyTorch 2.0, please upgrade PyTorch to 2.0.")
+            raise ImportError("PhotonAttnProcessor2_0 requires PyTorch 2.0, please upgrade PyTorch to 2.0.")
 
     def __call__(
         self,
@@ -5629,9 +5629,9 @@ class MirageAttnProcessor2_0:
         **kwargs,
     ) -> torch.Tensor:
         """
-        Apply Mirage attention using standard diffusers interface.
+        Apply Photon attention using standard diffusers interface.
 
-        Expected tensor formats from MirageBlock.attn_forward():
+        Expected tensor formats from PhotonBlock.attn_forward():
         - hidden_states: Image queries with RoPE applied [B, H, L_img, D]
         - encoder_hidden_states: Packed key+value tensors [B, H, L_all, 2*D]
           (concatenated keys and values from text + image + spatial conditioning)
@@ -5640,15 +5640,15 @@ class MirageAttnProcessor2_0:
 
         if encoder_hidden_states is None:
             raise ValueError(
-                "MirageAttnProcessor2_0 requires 'encoder_hidden_states' containing packed key+value tensors. "
-                "This should be provided by MirageBlock.attn_forward()."
+                "PhotonAttnProcessor2_0 requires 'encoder_hidden_states' containing packed key+value tensors. "
+                "This should be provided by PhotonBlock.attn_forward()."
             )
 
         # Unpack the combined key+value tensor
         # encoder_hidden_states is [B, H, L_all, 2*D] containing [keys, values]
         key, value = encoder_hidden_states.chunk(2, dim=-1)  # Each [B, H, L_all, D]
 
-        # Apply scaled dot-product attention with Mirage's processed tensors
+        # Apply scaled dot-product attention with Photon's processed tensors
         # hidden_states is image queries [B, H, L_img, D]
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             hidden_states.contiguous(), key.contiguous(), value.contiguous(), attn_mask=attention_mask
@@ -5714,7 +5714,7 @@ AttentionProcessor = Union[
     PAGHunyuanAttnProcessor2_0,
     PAGCFGHunyuanAttnProcessor2_0,
     LuminaAttnProcessor2_0,
-    MirageAttnProcessor2_0,
+    PhotonAttnProcessor2_0,
     FusedAttnProcessor2_0,
     CustomDiffusionXFormersAttnProcessor,
     CustomDiffusionAttnProcessor2_0,

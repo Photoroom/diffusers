@@ -17,7 +17,7 @@ import unittest
 
 import torch
 
-from diffusers.models.transformers.transformer_mirage import MirageTransformer2DModel
+from diffusers.models.transformers.transformer_photon import PhotonTransformer2DModel
 
 from ...testing_utils import enable_full_determinism, torch_device
 from ..test_modeling_common import ModelTesterMixin
@@ -26,8 +26,8 @@ from ..test_modeling_common import ModelTesterMixin
 enable_full_determinism()
 
 
-class MirageTransformerTests(ModelTesterMixin, unittest.TestCase):
-    model_class = MirageTransformer2DModel
+class PhotonTransformerTests(ModelTesterMixin, unittest.TestCase):
+    model_class = PhotonTransformer2DModel
     main_input_name = "image_latent"
 
     @property
@@ -92,7 +92,7 @@ class MirageTransformerTests(ModelTesterMixin, unittest.TestCase):
 
     def test_model_initialization(self):
         # Test model initialization
-        model = MirageTransformer2DModel(
+        model = PhotonTransformer2DModel(
             in_channels=16,
             patch_size=2,
             context_in_dim=1792,
@@ -121,7 +121,7 @@ class MirageTransformerTests(ModelTesterMixin, unittest.TestCase):
             "theta": 10_000,
         }
 
-        model = MirageTransformer2DModel.from_config(config_dict)
+        model = PhotonTransformer2DModel.from_config(config_dict)
         self.assertEqual(model.config.in_channels, 16)
         self.assertEqual(model.config.hidden_size, 1792)
 
@@ -193,7 +193,7 @@ class MirageTransformerTests(ModelTesterMixin, unittest.TestCase):
     def test_invalid_config(self):
         # Test invalid configuration - hidden_size not divisible by num_heads
         with self.assertRaises(ValueError):
-            MirageTransformer2DModel(
+            PhotonTransformer2DModel(
                 in_channels=16,
                 patch_size=2,
                 context_in_dim=1792,
@@ -207,7 +207,7 @@ class MirageTransformerTests(ModelTesterMixin, unittest.TestCase):
 
         # Test invalid axes_dim that doesn't sum to pe_dim
         with self.assertRaises(ValueError):
-            MirageTransformer2DModel(
+            PhotonTransformer2DModel(
                 in_channels=16,
                 patch_size=2,
                 context_in_dim=1792,
