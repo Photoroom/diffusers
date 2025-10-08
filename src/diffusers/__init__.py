@@ -224,6 +224,7 @@ else:
             "LTXVideoTransformer3DModel",
             "Lumina2Transformer2DModel",
             "LuminaNextDiT2DModel",
+            "PhotonTransformer2DModel",
             "MochiTransformer3DModel",
             "ModelMixin",
             "MotionAdapter",
