@@ -18,7 +18,7 @@
   <img alt="LoRA" src="https://img.shields.io/badge/LoRA-d8b4fe?style=flat"/>
 </div>
 
-Photon is a text-to-image diffusion model using a transformer-based architecture with flow matching for efficient high-quality image generation. The model uses T5Gemma as the text encoder and supports both Flux VAE (AutoencoderKL) and DC-AE (AutoencoderDC) for latent compression.
+Photon is a text-to-image diffusion model using simplified MMDIT architecture with flow matching for efficient high-quality image generation. The model uses T5Gemma as the text encoder and supports either Flux VAE (AutoencoderKL) or DC-AE (AutoencoderDC) for latent compression.
 
 Key features:
 
@@ -28,19 +28,37 @@ Key features:
 - **T5Gemma Text Encoder**: Uses Google's T5Gemma-2B-2B-UL2 model for text encoding offering multiple language support
 - **Efficient Architecture**: ~1.3B parameters in the transformer, enabling fast inference while maintaining quality
 
+## Available models:
+We offer a range of **Photon models** featuring different **VAE configurations**, each optimized for generating images at various resolutions.  
+Both **fine-tuned** and **non-fine-tuned** versions are available:
+
+- **Non-fine-tuned models** perform best with **highly detailed prompts**, capturing fine nuances and complex compositions.  
+- **Fine-tuned models**, trained on the [Alchemist dataset](https://huggingface.co/datasets/yandex/alchemist), enhance the **aesthetic quality** of the base models—especially when prompts are **less detailed**.
+
+
+| Model | Recommended dtype | Resolution | Fine-tuned |
+|:-----:|:-----------------:|:----------:|:----------:|
+| [`Photoroom/photon-256-t2i`](https://huggingface.co/Photoroom/photon-256-t2i) | `torch.bfloat16` | 256x256 | No |
+| [`Photoroom/photon-256-t2i-sft`](https://huggingface.co/Photoroom/photon-256-t2i-sft) | `torch.bfloat16` | 256x256 | Yes |
+| [`Photoroom/photon-512-t2i`](https://huggingface.co/Photoroom/photon-512-t2i) | `torch.bfloat16` | 512x512 | No |
+| [`Photoroom/photon-512-t2i-sft`](hhttps://huggingface.co/Photoroom/photon-512-t2i-sft) | `torch.bfloat16` | 512x512 | Yes |
+| [`Photoroom/photon-512-t2i-dc-ae`](https://huggingface.co/Photoroom/photon-512-t2i-dc-ae) | `torch.bfloat16` | 512x512 | No |
+| [`Photoroom/photon-512-t2i-dc-ae-sft`](https://huggingface.co/Photoroom/photon-512-t2i-dc-ae-sft) | `torch.bfloat16` | 512x512 | Yes |
+
+Refer to [this](https://huggingface.co/collections/Photoroom/photon-models-68e66254c202ebfab99ad38e) collection for more information.
 
 ## Loading the Pipeline
 
 Photon checkpoints only store the transformer and scheduler weights locally. The VAE and text encoder are automatically loaded from HuggingFace during pipeline initialization:
 
 ```py
-from diffusers import PhotonPipeline
+from diffusers.pipelines.photon import PhotonPipeline
 
 # Load pipeline - VAE and text encoder will be loaded from HuggingFace
-pipe = PhotonPipeline.from_pretrained("path/to/photon_checkpoint")
+pipe = PhotonPipeline.from_pretrained("Photoroom/photon-512-t2i")
 pipe.to("cuda")
 
-prompt = "A vibrant night sky filled with colorful fireworks, with one large firework burst forming the glowing text “Photon” in bright, sparkling light"
+prompt = "A highly detailed 3D animated scene of a cute, intelligent duck scientist in a futuristic laboratory. The duck stands on a shiny metallic floor surrounded by glowing glass tubes filled with colorful liquids—blue, green, and purple—connected by translucent hoses emitting soft light. The duck wears a tiny white lab coat, safety goggles, and has a curious, determined expression while conducting an experiment. Sparks of energy and soft particle effects fill the air as scientific instruments hum with power. In the background, holographic screens display molecular diagrams and equations. Above the duck’s head, the word “PHOTON” glows vividly in midair as if made of pure light, illuminating the scene with a warm golden glow. The lighting is cinematic, with rich reflections and subtle depth of field, emphasizing a Pixar-like, ultra-polished 3D animation style. Rendered in ultra high resolution, realistic subsurface scattering on the duck’s feathers, and vibrant color grading that gives a sense of wonder and scientific discovery."
 image = pipe(prompt, num_inference_steps=28, guidance_scale=4.0).images[0]
 image.save("photon_output.png")
 ```
@@ -59,12 +77,12 @@ from transformers import T5GemmaModel, GemmaTokenizerFast
 
 # Load transformer
 transformer = PhotonTransformer2DModel.from_pretrained(
-    "path/to/checkpoint", subfolder="transformer"
+    "Photoroom/photon-512-t2i", subfolder="transformer"
 )
 
 # Load scheduler
 scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-    "path/to/checkpoint", subfolder="scheduler"
+    "Photoroom/photon-512-t2i", subfolder="scheduler"
 )
 
 # Load T5Gemma text encoder
@@ -116,8 +134,11 @@ Key parameters for image generation:
 
 ```py
 # Example with custom parameters
-image = pipe(
-    prompt="A vibrant night sky filled with colorful fireworks, with one large firework burst forming the glowing text “Photon” in bright, sparkling light",
+import torch
+from diffusers.pipelines.photon import PhotonPipeline
+
+pipe = pipe(
+    prompt="A highly detailed 3D animated scene of a cute, intelligent duck scientist in a futuristic laboratory. The duck stands on a shiny metallic floor surrounded by glowing glass tubes filled with colorful liquids—blue, green, and purple—connected by translucent hoses emitting soft light. The duck wears a tiny white lab coat, safety goggles, and has a curious, determined expression while conducting an experiment. Sparks of energy and soft particle effects fill the air as scientific instruments hum with power. In the background, holographic screens display molecular diagrams and equations. Above the duck’s head, the word “PHOTON” glows vividly in midair as if made of pure light, illuminating the scene with a warm golden glow. The lighting is cinematic, with rich reflections and subtle depth of field, emphasizing a Pixar-like, ultra-polished 3D animation style. Rendered in ultra high resolution, realistic subsurface scattering on the duck’s feathers, and vibrant color grading that gives a sense of wonder and scientific discovery.",
     num_inference_steps=28,
     guidance_scale=4.0,
     height=512,
@@ -132,9 +153,9 @@ For memory-constrained environments:
 
 ```py
 import torch
-from diffusers import PhotonPipeline
+from diffusers.pipelines.photon import PhotonPipeline
 
-pipe = PhotonPipeline.from_pretrained("path/to/checkpoint", torch_dtype=torch.float16)
+pipe = PhotonPipeline.from_pretrained("Photoroom/photon-512-t2i", torch_dtype=torch.float16)
 pipe.enable_model_cpu_offload()  # Offload components to CPU when not in use
 
 # Or use sequential CPU offload for even lower memory
