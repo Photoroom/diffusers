@@ -7,11 +7,11 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict, dataclass
+from typing import Dict, Tuple
 
 import torch
 from safetensors.torch import save_file
-from dataclasses import dataclass, asdict
-from typing import Tuple, Dict
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -19,7 +19,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from diffusers.models.transformers.transformer_photon import PhotonTransformer2DModel
 from diffusers.pipelines.photon import PhotonPipeline
 
+
 DEFAULT_RESOLUTION = 512
+
 
 @dataclass(frozen=True)
 class PhotonBase:
@@ -60,7 +62,6 @@ def build_config(vae_type: str, resolution: int = DEFAULT_RESOLUTION) -> dict:
     config_dict["axes_dim"] = list(config_dict["axes_dim"])  # type: ignore[index]
     config_dict["sample_size"] = sample_size
     return config_dict
-
 
 
 def create_parameter_mapping(depth: int) -> dict:
@@ -174,16 +175,10 @@ def create_transformer_from_checkpoint(checkpoint_path: str, config: dict) -> Ph
     return transformer
 
 
-
-
 def create_scheduler_config(output_path: str):
     """Create FlowMatchEulerDiscreteScheduler config."""
 
-    scheduler_config = {
-        "_class_name": "FlowMatchEulerDiscreteScheduler",
-        "num_train_timesteps": 1000,
-        "shift": 1.0
-    }
+    scheduler_config = {"_class_name": "FlowMatchEulerDiscreteScheduler", "num_train_timesteps": 1000, "shift": 1.0}
 
     scheduler_path = os.path.join(output_path, "scheduler")
     os.makedirs(scheduler_path, exist_ok=True)
@@ -194,11 +189,9 @@ def create_scheduler_config(output_path: str):
     print("✓ Created scheduler config")
 
 
-
-
 def download_and_save_vae(vae_type: str, output_path: str):
     """Download and save VAE to local directory."""
-    from diffusers import AutoencoderKL, AutoencoderDC
+    from diffusers import AutoencoderDC, AutoencoderKL
 
     vae_path = os.path.join(output_path, "vae")
     os.makedirs(vae_path, exist_ok=True)
@@ -216,8 +209,8 @@ def download_and_save_vae(vae_type: str, output_path: str):
 
 def download_and_save_text_encoder(output_path: str):
     """Download and save T5Gemma text encoder and tokenizer."""
-    from transformers.models.t5gemma.modeling_t5gemma import T5GemmaModel
     from transformers import GemmaTokenizerFast
+    from transformers.models.t5gemma.modeling_t5gemma import T5GemmaModel
 
     text_encoder_path = os.path.join(output_path, "text_encoder")
     tokenizer_path = os.path.join(output_path, "tokenizer")
@@ -259,6 +252,7 @@ def create_model_index(vae_type: str, output_path: str):
     model_index_path = os.path.join(output_path, "model_index.json")
     with open(model_index_path, "w") as f:
         json.dump(model_index, f, indent=2)
+
 
 def main(args):
     # Validate inputs

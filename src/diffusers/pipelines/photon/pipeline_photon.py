@@ -14,7 +14,6 @@
 
 import html
 import inspect
-import os
 import re
 import urllib.parse as ul
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -32,14 +31,14 @@ from diffusers.image_processor import VaeImageProcessor
 from diffusers.loaders import FromSingleFileMixin, LoraLoaderMixin, TextualInversionLoaderMixin
 from diffusers.models import AutoencoderDC, AutoencoderKL
 from diffusers.models.transformers.transformer_photon import PhotonTransformer2DModel, seq2img
+from diffusers.pipelines.photon.pipeline_output import PhotonPipelineOutput
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import (
     logging,
     replace_example_docstring,
 )
 from diffusers.utils.torch_utils import randn_tensor
-from diffusers.pipelines.pipeline_utils import DiffusionPipeline
-from diffusers.pipelines.photon.pipeline_output import PhotonPipelineOutput
 
 
 DEFAULT_HEIGHT = 512
@@ -238,7 +237,7 @@ class PhotonPipeline(
             )
 
         # Extract encoder if text_encoder is T5GemmaModel
-        if hasattr(text_encoder, 'encoder'):
+        if hasattr(text_encoder, "encoder"):
             text_encoder = text_encoder.encoder
 
         self.text_encoder = text_encoder
@@ -262,7 +261,9 @@ class PhotonPipeline(
         # Set default dimensions from transformer config
         self.default_sample_size = (
             self.transformer.config.sample_size
-            if hasattr(self, "transformer") and self.transformer is not None and hasattr(self.transformer.config, "sample_size")
+            if hasattr(self, "transformer")
+            and self.transformer is not None
+            and hasattr(self.transformer.config, "sample_size")
             else 64
         )
 

@@ -54,7 +54,7 @@ def get_image_ids(batch_size: int, height: int, width: int, patch_size: int, dev
             Tensor of shape `(batch_size, num_patches, 2)` containing the (row, col)
             coordinates of each patch in the image grid.
     """
-    
+
     img_ids = torch.zeros(height // patch_size, width // patch_size, 2, device=device)
     img_ids[..., 0] = torch.arange(height // patch_size, device=device)[:, None]
     img_ids[..., 1] = torch.arange(width // patch_size, device=device)[None, :]
@@ -69,7 +69,7 @@ def apply_rope(xq: Tensor, freqs_cis: Tensor) -> Tensor:
         xq (`torch.Tensor`):
             Input tensor of shape `(..., dim)` representing the queries.
         freqs_cis (`torch.Tensor`):
-            Precomputed rotary frequency components of shape `(..., dim/2, 2)` 
+            Precomputed rotary frequency components of shape `(..., dim/2, 2)`
             containing cosine and sine pairs.
 
     Returns:
@@ -88,7 +88,7 @@ class EmbedND(nn.Module):
     This module creates rotary embeddings (RoPE) across multiple axes, where each
     axis can have its own embedding dimension. The embeddings are combined and
     returned as a single tensor
-    
+
     Parameters:
         dim (int):
         Base embedding dimension (must be even).
@@ -97,6 +97,7 @@ class EmbedND(nn.Module):
         axes_dim (list[int]):
         List of embedding dimensions for each axis (each must be even).
     """
+
     def __init__(self, dim: int, theta: int, axes_dim: list[int]):
         super().__init__()
         self.dim = dim
@@ -136,6 +137,7 @@ class MLPEmbedder(nn.Module):
         `torch.Tensor`:
             Tensor of shape `(..., hidden_dim)` containing the embedded representations.
     """
+
     def __init__(self, in_dim: int, hidden_dim: int):
         super().__init__()
         self.in_layer = nn.Linear(in_dim, hidden_dim, bias=True)
@@ -160,6 +162,7 @@ class QKNorm(torch.nn.Module):
             A tuple `(q, k)` where both are normalized and cast to the same dtype
             as the value tensor `v`.
     """
+
     def __init__(self, dim: int):
         super().__init__()
         self.query_norm = RMSNorm(dim, eps=1e-6)
@@ -195,6 +198,7 @@ class Modulation(nn.Module):
             A tuple of two modulation outputs. Each `ModulationOut` contains
             three components (e.g., scale, shift, gate).
     """
+
     def __init__(self, dim: int):
         super().__init__()
         self.lin = nn.Linear(dim, 6 * dim, bias=True)
@@ -269,6 +273,7 @@ class PhotonBlock(nn.Module):
                 `torch.Tensor`:
                     Attention output of shape `(B, L_img, hidden_size)`.
     """
+
     def __init__(
         self,
         hidden_size: int,
@@ -363,9 +368,7 @@ class PhotonBlock(nn.Module):
             if attention_mask.dim() != 2:
                 raise ValueError(f"Unsupported attention_mask shape: {attention_mask.shape}")
             if attention_mask.shape[-1] != l_txt:
-                raise ValueError(
-                    f"attention_mask last dim {attention_mask.shape[-1]} must equal text length {l_txt}"
-                )
+                raise ValueError(f"attention_mask last dim {attention_mask.shape[-1]} must equal text length {l_txt}")
 
             device = img_q.device
 
@@ -407,31 +410,30 @@ class PhotonBlock(nn.Module):
         **_: dict[str, Any],
     ) -> Tensor:
         r"""
-    Runs modulation-gated cross-attention and MLP, with residual connections.
+        Runs modulation-gated cross-attention and MLP, with residual connections.
 
-    Parameters:
-        img (`torch.Tensor`):
-            Image tokens of shape `(B, L_img, hidden_size)`.
-        txt (`torch.Tensor`):
-            Text tokens of shape `(B, L_txt, hidden_size)`.
-        vec (`torch.Tensor`):
-            Conditioning vector used by `Modulation` to produce scale/shift/gates,
-            shape `(B, hidden_size)` (or broadcastable).
-        pe (`torch.Tensor`):
-            Rotary positional embeddings applied inside attention.
-        spatial_conditioning (`torch.Tensor`, *optional*):
-            Extra conditioning tokens of shape `(B, L_cond, hidden_size)`. Used only
-            if spatial conditioning is enabled in the block.
-        attention_mask (`torch.Tensor`, *optional*):
-            Boolean mask for text tokens of shape `(B, L_txt)`, where `0` marks padding.
-        **_:
-            Ignored additional keyword arguments for API compatibility.
+        Parameters:
+            img (`torch.Tensor`):
+                Image tokens of shape `(B, L_img, hidden_size)`.
+            txt (`torch.Tensor`):
+                Text tokens of shape `(B, L_txt, hidden_size)`.
+            vec (`torch.Tensor`):
+                Conditioning vector used by `Modulation` to produce scale/shift/gates,
+                shape `(B, hidden_size)` (or broadcastable).
+            pe (`torch.Tensor`):
+                Rotary positional embeddings applied inside attention.
+            spatial_conditioning (`torch.Tensor`, *optional*):
+                Extra conditioning tokens of shape `(B, L_cond, hidden_size)`. Used only
+                if spatial conditioning is enabled in the block.
+            attention_mask (`torch.Tensor`, *optional*):
+                Boolean mask for text tokens of shape `(B, L_txt)`, where `0` marks padding.
+            **_:
+                Ignored additional keyword arguments for API compatibility.
 
-    Returns:
-        `torch.Tensor`:
-            Updated image tokens of shape `(B, L_img, hidden_size)`.
-    """
-
+        Returns:
+            `torch.Tensor`:
+                Updated image tokens of shape `(B, L_img, hidden_size)`.
+        """
 
         mod_attn, mod_mlp = self.modulation(vec)
 
@@ -475,7 +477,6 @@ class LastLayer(nn.Module):
     """
 
     def __init__(self, hidden_size: int, patch_size: int, out_channels: int):
-        
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
@@ -727,7 +728,6 @@ class PhotonTransformer2DModel(ModelMixin, ConfigMixin):
             fn_recursive_attn_processor(name, module, processor)
 
     def _process_inputs(self, image_latent: Tensor, txt: Tensor, **_: Any) -> tuple[Tensor, Tensor, Tensor]:
-        
         txt = self.txt_in(txt)
         img = img2seq(image_latent, self.patch_size)
         bs, _, h, w = image_latent.shape
