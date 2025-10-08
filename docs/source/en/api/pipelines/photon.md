@@ -68,9 +68,8 @@ image.save("photon_output.png")
 You can also load components individually:
 
 ```py
-import torch
-from diffusers import PhotonPipeline
-from diffusers.models import AutoencoderKL, AutoencoderDC
+from diffusers.pipelines.photon import PhotonPipeline
+from diffusers.models import AutoencoderKL
 from diffusers.models.transformers.transformer_photon import PhotonTransformer2DModel
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from transformers import T5GemmaModel, GemmaTokenizerFast
