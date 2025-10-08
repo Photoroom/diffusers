@@ -28,18 +28,18 @@ from transformers import (
     T5TokenizerFast,
 )
 
-from ...image_processor import VaeImageProcessor
-from ...loaders import FromSingleFileMixin, LoraLoaderMixin, TextualInversionLoaderMixin
-from ...models import AutoencoderDC, AutoencoderKL
-from ...models.transformers.transformer_photon import PhotonTransformer2DModel, seq2img
-from ...schedulers import FlowMatchEulerDiscreteScheduler
-from ...utils import (
+from diffusers.image_processor import VaeImageProcessor
+from diffusers.loaders import FromSingleFileMixin, LoraLoaderMixin, TextualInversionLoaderMixin
+from diffusers.models import AutoencoderDC, AutoencoderKL
+from diffusers.models.transformers.transformer_photon import PhotonTransformer2DModel, seq2img
+from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
+from diffusers.utils import (
     logging,
     replace_example_docstring,
 )
-from ...utils.torch_utils import randn_tensor
-from ..pipeline_utils import DiffusionPipeline
-from .pipeline_output import PhotonPipelineOutput
+from diffusers.utils.torch_utils import randn_tensor
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+from diffusers.pipelines.photon.pipeline_output import PhotonPipelineOutput
 
 
 DEFAULT_HEIGHT = 512
@@ -180,29 +180,11 @@ EXAMPLE_DOC_STRING = """
         ```py
         >>> import torch
         >>> from diffusers import PhotonPipeline
-        >>> from diffusers.models import AutoencoderKL, AutoencoderDC
-        >>> from transformers import T5GemmaModel, GemmaTokenizerFast
 
-        >>> # Load pipeline directly with from_pretrained
+        >>> # Load pipeline with from_pretrained
         >>> pipe = PhotonPipeline.from_pretrained("path/to/photon_checkpoint")
-
-        >>> # Or initialize pipeline components manually
-        >>> transformer = PhotonTransformer2DModel.from_pretrained("path/to/transformer")
-        >>> scheduler = FlowMatchEulerDiscreteScheduler()
-        >>> # Load T5Gemma encoder
-        >>> t5gemma_model = T5GemmaModel.from_pretrained("google/t5gemma-2b-2b-ul2")
-        >>> text_encoder = t5gemma_model.encoder
-        >>> tokenizer = GemmaTokenizerFast.from_pretrained("google/t5gemma-2b-2b-ul2")
-        >>> vae = AutoencoderKL.from_pretrained("black-forest-labs/FLUX.1-dev", subfolder="vae")
-
-        >>> pipe = PhotonPipeline(
-        ...     transformer=transformer,
-        ...     scheduler=scheduler,
-        ...     text_encoder=text_encoder,
-        ...     tokenizer=tokenizer,
-        ...     vae=vae
-        ... )
         >>> pipe.to("cuda")
+
         >>> prompt = "A digital painting of a rusty, vintage tram on a sandy beach"
         >>> image = pipe(prompt, num_inference_steps=28, guidance_scale=4.0).images[0]
         >>> image.save("photon_output.png")
@@ -240,74 +222,6 @@ class PhotonPipeline(
     _callback_tensor_inputs = ["latents"]
     _optional_components = []
 
-    # Component configurations for automatic loading
-    config_name = "model_index.json"
-
-    @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], **kwargs):
-        """
-        Override from_pretrained to load VAE and text encoder from HuggingFace models.
-
-        The PhotonPipeline checkpoints only store transformer and scheduler locally.
-        VAE and text encoder are loaded from external HuggingFace models as specified
-        in model_index.json.
-        """
-        import json
-        from transformers.models.t5gemma.modeling_t5gemma import T5GemmaModel
-
-        model_index_path = os.path.join(pretrained_model_name_or_path, "model_index.json")
-        if not os.path.exists(model_index_path):
-            raise ValueError(f"model_index.json not found in {pretrained_model_name_or_path}")
-
-        with open(model_index_path, "r") as f:
-            model_index = json.load(f)
-
-        vae_model_name = model_index.get("vae")
-        vae_subfolder = model_index.get("vae_subfolder")
-        text_model_name = model_index.get("text_encoder")
-        tokenizer_model_name = model_index.get("tokenizer")
-        default_height = model_index.get("default_height", DEFAULT_HEIGHT)
-        default_width = model_index.get("default_width", DEFAULT_WIDTH)
-
-        logger.info(f"Loading VAE from {vae_model_name}...")
-        if "FLUX" in vae_model_name or "flux" in vae_model_name:
-            vae = AutoencoderKL.from_pretrained(vae_model_name, subfolder=vae_subfolder)
-        else:  # DC-AE
-            vae = AutoencoderDC.from_pretrained(vae_model_name)
-
-        logger.info(f"Loading text encoder from {text_model_name}...")
-        t5gemma_model = T5GemmaModel.from_pretrained(text_model_name)
-        text_encoder = t5gemma_model.encoder
-
-        logger.info(f"Loading tokenizer from {tokenizer_model_name}...")
-        tokenizer = GemmaTokenizerFast.from_pretrained(tokenizer_model_name)
-        tokenizer.model_max_length = 256
-
-        # Load transformer and scheduler from local checkpoint
-        logger.info(f"Loading transformer from {pretrained_model_name_or_path}...")
-        transformer = PhotonTransformer2DModel.from_pretrained(
-            pretrained_model_name_or_path, subfolder="transformer"
-        )
-
-        logger.info(f"Loading scheduler from {pretrained_model_name_or_path}...")
-        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-            pretrained_model_name_or_path, subfolder="scheduler"
-        )
-
-        pipeline = cls(
-            transformer=transformer,
-            scheduler=scheduler,
-            text_encoder=text_encoder,
-            tokenizer=tokenizer,
-            vae=vae,
-        )
-
-        # Store default dimensions as pipeline attributes
-        pipeline.default_height = default_height
-        pipeline.default_width = default_width
-
-        return pipeline
-
     def __init__(
         self,
         transformer: PhotonTransformer2DModel,
@@ -323,6 +237,10 @@ class PhotonPipeline(
                 "PhotonTransformer2DModel is not available. Please ensure the transformer_photon module is properly installed."
             )
 
+        # Extract encoder if text_encoder is T5GemmaModel
+        if hasattr(text_encoder, 'encoder'):
+            text_encoder = text_encoder.encoder
+
         self.text_encoder = text_encoder
         self.tokenizer = tokenizer
         self.text_preprocessor = TextPreprocessor()
@@ -337,7 +255,16 @@ class PhotonPipeline(
 
         # Enhance VAE with universal properties for both AutoencoderKL and AutoencoderDC
         self._enhance_vae_properties()
-        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae.spatial_compression_ratio)
+
+        # Set image processor using vae_scale_factor property
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
+
+        # Set default dimensions from transformer config
+        self.default_sample_size = (
+            self.transformer.config.sample_size
+            if hasattr(self, "transformer") and self.transformer is not None and hasattr(self.transformer.config, "sample_size")
+            else 64
+        )
 
     def _enhance_vae_properties(self):
         """Add universal properties to VAE for consistent interface across AutoencoderKL and AutoencoderDC."""
@@ -563,8 +490,8 @@ class PhotonPipeline(
         """
 
         # 0. Default height and width to transformer config
-        height = height or getattr(self, 'default_height', DEFAULT_HEIGHT)
-        width = width or getattr(self, 'default_width', DEFAULT_WIDTH)
+        height = height or self.default_sample_size * self.vae_scale_factor
+        width = width or self.default_sample_size * self.vae_scale_factor
 
         # 1. Check inputs
         self.check_inputs(

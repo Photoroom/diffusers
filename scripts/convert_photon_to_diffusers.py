@@ -19,8 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from diffusers.models.transformers.transformer_photon import PhotonTransformer2DModel
 from diffusers.pipelines.photon import PhotonPipeline
 
-DEFAULT_HEIGHT = 512
-DEFAULT_WIDTH = 512
+DEFAULT_RESOLUTION = 512
 
 @dataclass(frozen=True)
 class PhotonBase:
@@ -47,16 +46,19 @@ class PhotonDCAE(PhotonBase):
     patch_size: int = 1
 
 
-def build_config(vae_type: str) -> dict:
+def build_config(vae_type: str, resolution: int = DEFAULT_RESOLUTION) -> dict:
     if vae_type == "flux":
         cfg = PhotonFlux()
+        sample_size = resolution // 8
     elif vae_type == "dc-ae":
         cfg = PhotonDCAE()
+        sample_size = resolution // 32
     else:
         raise ValueError(f"Unsupported VAE type: {vae_type}. Use 'flux' or 'dc-ae'")
 
     config_dict = asdict(cfg)
     config_dict["axes_dim"] = list(config_dict["axes_dim"])  # type: ignore[index]
+    config_dict["sample_size"] = sample_size
     return config_dict
 
 
@@ -194,35 +196,64 @@ def create_scheduler_config(output_path: str):
 
 
 
-def create_model_index(vae_type: str, output_path: str):
-    """Create model_index.json for the pipeline with HuggingFace model references."""
+def download_and_save_vae(vae_type: str, output_path: str):
+    """Download and save VAE to local directory."""
+    from diffusers import AutoencoderKL, AutoencoderDC
+
+    vae_path = os.path.join(output_path, "vae")
+    os.makedirs(vae_path, exist_ok=True)
 
     if vae_type == "flux":
-        vae_model_name = "black-forest-labs/FLUX.1-dev"
-        vae_subfolder = "vae"
-        default_height = DEFAULT_HEIGHT
-        default_width = DEFAULT_WIDTH
+        print("Downloading FLUX VAE from black-forest-labs/FLUX.1-dev...")
+        vae = AutoencoderKL.from_pretrained("black-forest-labs/FLUX.1-dev", subfolder="vae")
     else:  # dc-ae
-        vae_model_name = "mit-han-lab/dc-ae-f32c32-sana-1.0-diffusers"
-        vae_subfolder = None
-        default_height = DEFAULT_HEIGHT
-        default_width = DEFAULT_WIDTH
+        print("Downloading DC-AE VAE from mit-han-lab/dc-ae-f32c32-sana-1.0-diffusers...")
+        vae = AutoencoderDC.from_pretrained("mit-han-lab/dc-ae-f32c32-sana-1.0-diffusers")
 
-    # Text encoder and tokenizer always use T5Gemma
-    text_model_name = "google/t5gemma-2b-2b-ul2"
+    vae.save_pretrained(vae_path)
+    print(f"✓ Saved VAE to {vae_path}")
+
+
+def download_and_save_text_encoder(output_path: str):
+    """Download and save T5Gemma text encoder and tokenizer."""
+    from transformers.models.t5gemma.modeling_t5gemma import T5GemmaModel
+    from transformers import GemmaTokenizerFast
+
+    text_encoder_path = os.path.join(output_path, "text_encoder")
+    tokenizer_path = os.path.join(output_path, "tokenizer")
+    os.makedirs(text_encoder_path, exist_ok=True)
+    os.makedirs(tokenizer_path, exist_ok=True)
+
+    print("Downloading T5Gemma model from google/t5gemma-2b-2b-ul2...")
+    t5gemma_model = T5GemmaModel.from_pretrained("google/t5gemma-2b-2b-ul2")
+
+    t5gemma_model.save_pretrained(text_encoder_path)
+    print(f"✓ Saved T5Gemma model to {text_encoder_path}")
+
+    print("Downloading tokenizer from google/t5gemma-2b-2b-ul2...")
+    tokenizer = GemmaTokenizerFast.from_pretrained("google/t5gemma-2b-2b-ul2")
+    tokenizer.model_max_length = 256
+    tokenizer.save_pretrained(tokenizer_path)
+    print(f"✓ Saved tokenizer to {tokenizer_path}")
+
+
+def create_model_index(vae_type: str, output_path: str):
+    """Create model_index.json for the pipeline."""
+
+    if vae_type == "flux":
+        vae_class = "AutoencoderKL"
+    else:  # dc-ae
+        vae_class = "AutoencoderDC"
 
     model_index = {
         "_class_name": "PhotonPipeline",
         "_diffusers_version": "0.31.0.dev0",
         "_name_or_path": os.path.basename(output_path),
         "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
-        "text_encoder": text_model_name,
-        "tokenizer": text_model_name,
+        "text_encoder": ["transformers", "T5GemmaModel"],
+        "tokenizer": ["transformers", "GemmaTokenizerFast"],
         "transformer": ["diffusers", "PhotonTransformer2DModel"],
-        "vae": vae_model_name,
-        "vae_subfolder": vae_subfolder,
-        "default_height": default_height,
-        "default_width": default_width,
+        "vae": ["diffusers", vae_class],
     }
 
     model_index_path = os.path.join(output_path, "model_index.json")
@@ -234,7 +265,7 @@ def main(args):
     if not os.path.exists(args.checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint_path}")
 
-    config = build_config(args.vae_type)
+    config = build_config(args.vae_type, args.resolution)
 
     # Create output directory
     os.makedirs(args.output_path, exist_ok=True)
@@ -256,8 +287,13 @@ def main(args):
     save_file(state_dict, os.path.join(transformer_path, "diffusion_pytorch_model.safetensors"))
     print(f"✓ Saved transformer to {transformer_path}")
 
+    # Create scheduler config
     create_scheduler_config(args.output_path)
 
+    download_and_save_vae(args.vae_type, args.output_path)
+    download_and_save_text_encoder(args.output_path)
+
+    # Create model_index.json
     create_model_index(args.vae_type, args.output_path)
 
     # Verify the pipeline can be loaded
@@ -301,6 +337,14 @@ if __name__ == "__main__":
         choices=["flux", "dc-ae"],
         required=True,
         help="VAE type to use: 'flux' for AutoencoderKL (16 channels) or 'dc-ae' for AutoencoderDC (32 channels)",
+    )
+
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        choices=[256, 512, 1024],
+        default=DEFAULT_RESOLUTION,
+        help="Target resolution for the model (256, 512, or 1024). Affects the transformer's sample_size.",
     )
 
     args = parser.parse_args()
