@@ -140,6 +140,73 @@ def apply_rotary_emb_qwen(
 
         return x_out.type_as(x)
 
+#@torch.jit.script
+def apply_rotary_emb_qwen_real(
+    x: torch.Tensor,                               # [B, S, H, D]
+    freqs_cis: torch.Tensor, #Union[torch.Tensor, Tuple[torch.Tensor]],  # [S, D] interleaved or (cos, sin)
+    #use_real_unbind_dim: int = -1,                 # Qwen uses -1 pairing (even, odd)
+) -> torch.Tensor:
+    # ---- 1) Extract cos/sin halves ----
+    # if isinstance(freqs_cis, (tuple, list)):
+    #     cos_in, sin_in = freqs_cis                 # user may pass halves or full; we normalize below
+    # elif freqs_cis.ndim == 2:                      # interleaved [S, D] = [c0,s0,c1,s1,...]
+    #print(f"freqs_cis.shape: {freqs_cis.shape}")
+    cos_in = freqs_cis[..., 0::2]              # [S, D/2]
+    sin_in = freqs_cis[..., 1::2]              # [S, D/2]
+    # elif freqs_cis.ndim >= 3 and freqs_cis.shape[-1] == 2:
+    #     print(f"freqs_cis.shape 3: {freqs_cis.shape}")
+    #     cos_in, sin_in = freqs_cis[..., 0], freqs_cis[..., 1]
+    # else:
+    #     raise ValueError(f"Unsupported freqs_cis shape {freqs_cis.shape}")
+
+    # ---- 2) Expand to full-D (duplicate each angle across its even/odd pair) ----
+    S = x.shape[1]
+    D = x.shape[-1]
+    half = D // 2
+
+    # If user passed full-D already, collapse to halves consistently
+    if cos_in.shape[-1] == D and sin_in.shape[-1] == D:
+        # reduce to halves by taking even positions; this keeps angles consistent
+        cos_in = cos_in[..., 0::2]
+        sin_in = sin_in[..., 0::2]
+
+    if cos_in.shape[-1] != half or sin_in.shape[-1] != half:
+        raise ValueError(f"Expected cos/sin halves of size D/2={half}, got {cos_in.shape[-1]} and {sin_in.shape[-1]}")
+
+    # Build full-D tensors by repeating each angle over its pair
+    # cos_full: [S, D] with pattern [c0, c0, c1, c1, ...]
+    # sin_full: [S, D] with pattern [s0, s0, s1, s1, ...]
+    cos_full = torch.empty(S, D, device=x.device, dtype=cos_in.dtype)
+    sin_full = torch.empty(S, D, device=x.device, dtype=sin_in.dtype)
+    cos_full[..., 0::2] = cos_in
+    cos_full[..., 1::2] = cos_in
+    sin_full[..., 0::2] = sin_in
+    sin_full[..., 1::2] = sin_in
+
+    # Broadcast along sequence, over heads
+    cos = cos_full.unsqueeze(0).unsqueeze(2)       # [1, S, 1, D]
+    sin = sin_full.unsqueeze(0).unsqueeze(2)       # [1, S, 1, D]
+
+    # ---- 3) Pairwise rotate x_head (full-D, as upstream code) ----
+    #if use_real_unbind_dim == -1:
+    # group into pairs [..., D/2, 2] with [even, odd]
+    x_pairs = x.float().reshape(*x.shape[:-1], -1, 2)
+    x_even, x_odd = x_pairs.unbind(-1)         # [B, S, H, D/2]
+    # rotate: (x_even + i x_odd) * (cos + i sin)
+    x_even_out = x_even * cos[..., 0::2] - x_odd * sin[..., 0::2]
+    x_odd_out  = x_even * sin[..., 0::2] + x_odd * cos[..., 0::2]
+    x_out = torch.stack([x_even_out, x_odd_out], dim=-1).reshape_as(x)
+    # elif use_real_unbind_dim == -2:
+    #     # pairs layout [..., 2, D/2]
+    #     x_pairs = x.float().reshape(*x.shape[:-1], 2, -1)
+    #     x_even, x_odd = x_pairs.unbind(-2)         # [B, S, H, D/2]
+    #     x_even_out = x_even * cos[..., 0::2] - x_odd * sin[..., 0::2]
+    #     x_odd_out  = x_even * sin[..., 0::2] + x_odd * cos[..., 0::2]
+    #     x_out = torch.stack([x_even_out, x_odd_out], dim=-2).reshape_as(x)
+    # else:
+    #     raise ValueError("use_real_unbind_dim must be -1 or -2")
+
+    return x_out.to(x.dtype)
 
 class QwenTimestepProjEmbeddings(nn.Module):
     def __init__(self, embedding_dim):
@@ -257,6 +324,146 @@ class QwenEmbedRope(nn.Module):
         freqs = torch.cat([freqs_frame, freqs_height, freqs_width], dim=-1).reshape(seq_lens, -1)
         return freqs.clone().contiguous()
 
+class QwenEmbedRopeReal(nn.Module):
+    """
+    Real-number equivalent of Qwen's complex RoPE embedding module.
+    Produces [S, D] tensors with interleaved [cos0, sin0, cos1, sin1, ...]
+    that can be used with the real-valued `apply_rotary_emb_qwen_real`.
+    """
+
+    def __init__(self, theta: int, axes_dim: List[int], scale_rope=False):
+        super().__init__()
+        self.theta = theta
+        self.axes_dim = axes_dim
+        self.scale_rope = scale_rope
+
+        pos_index = torch.arange(4096)
+        neg_index = torch.arange(4096).flip(0) * -1 - 1
+
+        # Construct real-valued cos/sin RoPE frequencies
+        self.pos_freqs = torch.cat(
+            [
+                self.rope_params(pos_index, self.axes_dim[0], self.theta),
+                self.rope_params(pos_index, self.axes_dim[1], self.theta),
+                self.rope_params(pos_index, self.axes_dim[2], self.theta),
+            ],
+            dim=1,
+        )
+        self.neg_freqs = torch.cat(
+            [
+                self.rope_params(neg_index, self.axes_dim[0], self.theta),
+                self.rope_params(neg_index, self.axes_dim[1], self.theta),
+                self.rope_params(neg_index, self.axes_dim[2], self.theta),
+            ],
+            dim=1,
+        )
+
+        self.rope_cache = {}
+
+    def rope_params(self, index: torch.Tensor, dim: int, theta=10000):
+        """
+        Returns a real-valued tensor with interleaved [cos, sin] along the last dimension.
+        Shape: [len(index), dim]
+        """
+        assert dim % 2 == 0
+        # Compute frequency base
+        freqs = torch.outer(
+            index.to(torch.float32),
+            1.0 / torch.pow(theta, torch.arange(0, dim, 2).float() / dim)
+        )  # [index_len, dim/2]
+
+        # Compute cos/sin and interleave: [cos0, sin0, cos1, sin1, ...]
+        cos, sin = torch.cos(freqs), torch.sin(freqs)
+        freqs = torch.stack([cos, sin], dim=-1).flatten(-2)  # [index_len, dim]
+        return freqs
+
+    def forward(self, video_fhw, txt_seq_lens, device):
+        """
+        Args:
+            video_fhw: [(frames, height, width), ...]
+            txt_seq_lens: list[int]
+        Returns:
+            vid_freqs: [sum_i (f*h*w), D]
+            txt_freqs: [max(txt_seq_lens), D]
+        """
+        if self.pos_freqs.device != device:
+            self.pos_freqs = self.pos_freqs.to(device)
+            self.neg_freqs = self.neg_freqs.to(device)
+
+        # Normalize to flat list of triples
+        fhw_triples = self._collect_fhw_triples(video_fhw)
+
+        vid_freqs = []
+        max_vid_index = 0
+
+        for idx, (frame, height, width) in enumerate(fhw_triples):
+            rope_key = f"{idx}_{height}_{width}"
+
+            if not torch.compiler.is_compiling() and not torch.jit.is_scripting():
+                if rope_key not in self.rope_cache:
+                    self.rope_cache[rope_key] = self._compute_video_freqs(frame, height, width, idx)
+                video_freq = self.rope_cache[rope_key]
+            else:
+                video_freq = self._compute_video_freqs(frame, height, width, idx)
+
+            vid_freqs.append(video_freq.to(device))
+
+            # scaling logic consistent with Qwen
+            if self.scale_rope:
+                max_vid_index = max(height // 2, width // 2, max_vid_index)
+            else:
+                max_vid_index = max(height, width, max_vid_index)
+
+        #max_len = max(txt_seq_lens)
+        txt_freqs = self.pos_freqs[max_vid_index:max_vid_index + txt_seq_lens, ...]
+        vid_freqs = torch.cat(vid_freqs, dim=0)
+        return vid_freqs, txt_freqs
+
+    @functools.lru_cache(maxsize=None)
+    def _compute_video_freqs(self, frame, height, width, idx=0):
+        seq_lens = frame * height * width
+        # Split each axis component
+        freqs_pos = self.pos_freqs.split([x for x in self.axes_dim], dim=1)
+        freqs_neg = self.neg_freqs.split([x for x in self.axes_dim], dim=1)
+
+        freqs_frame = freqs_pos[0][idx:idx + frame].view(frame, 1, 1, -1).expand(frame, height, width, -1)
+
+        if self.scale_rope:
+            freqs_height = torch.cat(
+                [freqs_neg[1][-(height - height // 2):], freqs_pos[1][:height // 2]],
+                dim=0,
+            )
+            freqs_width = torch.cat(
+                [freqs_neg[2][-(width - width // 2):], freqs_pos[2][:width // 2]],
+                dim=0,
+            )
+        else:
+            freqs_height = freqs_pos[1][:height]
+            freqs_width = freqs_pos[2][:width]
+
+        freqs_height = freqs_height.view(1, height, 1, -1).expand(frame, height, width, -1)
+        freqs_width = freqs_width.view(1, 1, width, -1).expand(frame, height, width, -1)
+
+        freqs = torch.cat([freqs_frame, freqs_height, freqs_width], dim=-1).reshape(seq_lens, -1)
+        return freqs.clone().contiguous()
+
+    def _collect_fhw_triples(self, video_fhw: List):
+        triples = []
+
+        def collect(item):
+            if isinstance(item, (list, tuple)):
+                if len(item) == 3 and all(isinstance(x, int) for x in item):
+                    triples.append(tuple(map(int, item)))
+                else:
+                    for sub in item:
+                        collect(sub)
+            else:
+                raise ValueError(f"Invalid video_fhw element: {item!r}")
+
+        collect(video_fhw)
+        if not triples:
+            raise ValueError("video_fhw must contain (frame, height, width) tuples.")
+        return triples
 
 class QwenDoubleStreamAttnProcessor2_0:
     """
@@ -318,11 +525,11 @@ class QwenDoubleStreamAttnProcessor2_0:
 
         # Apply RoPE
         if image_rotary_emb is not None:
-            img_freqs, txt_freqs = image_rotary_emb
-            img_query = apply_rotary_emb_qwen(img_query, img_freqs, use_real=False)
-            img_key = apply_rotary_emb_qwen(img_key, img_freqs, use_real=False)
-            txt_query = apply_rotary_emb_qwen(txt_query, txt_freqs, use_real=False)
-            txt_key = apply_rotary_emb_qwen(txt_key, txt_freqs, use_real=False)
+            img_freqs, txt_freqs = image_rotary_emb  # each [S, D] interleaved from your QwenEmbedRopeReal
+            img_query = apply_rotary_emb_qwen_real(img_query, img_freqs)
+            img_key   = apply_rotary_emb_qwen_real(img_key,   img_freqs)
+            txt_query = apply_rotary_emb_qwen_real(txt_query, txt_freqs)
+            txt_key   = apply_rotary_emb_qwen_real(txt_key,   txt_freqs)
 
         # Concatenate for joint attention
         # Order: [text, image]
