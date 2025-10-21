@@ -215,6 +215,75 @@ EXAMPLE_DOC_STRING = """
         ```
 """
 
+def _alpha_sigma_from_sched(scheduler, t, device, dtype):
+    """
+    Compute (alpha_t, sigma_t) such that x_t = alpha_t * x0 + sigma_t * eps.
+    Supports schedulers with .sigmas (k-diffusion) or .alphas_cumprod (DDPM-like).
+    """
+    if hasattr(scheduler, "sigmas"):  # e.g. Euler, DPM++, etc.
+        # find index in scheduler.timesteps closest to t
+        if hasattr(scheduler, "timesteps"):
+            t_idx = (torch.abs(scheduler.timesteps - t)).argmin().item()
+        else:
+            t_idx = int(t.item()) if isinstance(t, torch.Tensor) else int(t)
+        sigma = scheduler.sigmas[t_idx].to(device=device, dtype=dtype)
+        alpha = (1.0 / torch.sqrt(1.0 + sigma * sigma)).to(device=device, dtype=dtype)
+        return alpha, sigma
+
+    # else assume DDPM-like (with alphas_cumprod)
+    ac = scheduler.alphas_cumprod.to(device=device, dtype=dtype)
+    if isinstance(t, torch.Tensor):
+        t_idx = int(t.item())
+    else:
+        t_idx = int(t)
+    alpha = torch.sqrt(ac[t_idx])
+    sigma = torch.sqrt(1.0 - alpha * alpha)
+    return alpha, sigma
+
+def _get_prediction_type(scheduler):
+    """
+    Robustly fetch the model prediction type used by the scheduler.
+    Returns one of {"epsilon", "v_prediction"}; defaults to "epsilon".
+    """
+    # 1) config as FrozenDict/dict (key access)
+    cfg = getattr(scheduler, "config", None)
+    if cfg is not None and hasattr(cfg, "get"):
+        pred_type = cfg.get("prediction_type", None)
+        if pred_type is not None:
+            return str(pred_type)
+
+    # 2) some schedulers expose it directly
+    pred_type = getattr(scheduler, "prediction_type", None)
+    if pred_type is not None:
+        return str(pred_type)
+
+    # 3) safe default
+    return "epsilon"
+
+
+
+def _head_to_eps(head, x_t, alpha, sigma, prediction_type: str):
+    if prediction_type == "epsilon":
+        return head
+    if prediction_type == "v_prediction":
+        return alpha * head + sigma * x_t
+    return head
+
+def _eps_to_head(eps, x_t, alpha, sigma, prediction_type: str):
+    if prediction_type == "epsilon":
+        return eps
+    if prediction_type == "v_prediction":
+        return (eps - sigma * x_t) / (alpha + 1e-12)
+    return eps
+
+def _proj_par(z, n):
+    return (z * n).sum(dim=(1, 2, 3), keepdim=True) * n
+
+def _proj(z, v):
+    v_hat = v / (v.norm(p=2, dim=(1, 2, 3), keepdim=True) + 1e-8)
+    return (z * v_hat).sum(dim=(1, 2, 3), keepdim=True) * v_hat
+
+
 
 class PhotonPipeline(
     DiffusionPipeline,
@@ -254,6 +323,12 @@ class PhotonPipeline(
         tokenizer: Union[T5TokenizerFast, GemmaTokenizerFast, AutoTokenizer],
         vae: Optional[Union[AutoencoderKL, AutoencoderDC]] = None,
         default_sample_size: Optional[int] = DEFAULT_RESOLUTION,
+        use_ctag: bool = False,
+        sta_tpd: int = 999,              # start of TAG window (larger t; e.g., early steps)
+        end_tpd: int = 0,                # end of TAG window (smaller t; e.g., late steps)
+        t_guidance_scale: float = 1.5,   # η_v in paper (>=1 to amplify tangential component)
+        r_guidance_scale: float = 1.0,   # η_n in paper (1.0 keeps the base solver's normal step)
+        eps = 1e-8,
     ):
         super().__init__()
 
@@ -265,6 +340,12 @@ class PhotonPipeline(
         self.text_preprocessor = TextPreprocessor()
         self.default_sample_size = default_sample_size
         self._guidance_scale = 1.0
+        self.use_ctag = use_ctag
+        self.sta_tpd = sta_tpd
+        self.end_tpd = end_tpd
+        self.t_guidance_scale = t_guidance_scale
+        self.r_guidance_scale = r_guidance_scale
+        self.eps = eps
 
         self.register_modules(
             transformer=transformer,
@@ -280,6 +361,8 @@ class PhotonPipeline(
             self.image_processor = PixArtImageProcessor(vae_scale_factor=self.vae_scale_factor)
         else:
             self.image_processor = None
+
+
 
     @property
     def vae_scale_factor(self):
@@ -700,23 +783,21 @@ class PhotonPipeline(
             ca_embed = text_embeddings
             ca_mask = cross_attn_mask
 
-        # 7. Denoising loop
+        # ---------------- 7. Denoising loop ----------------
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
-                # Duplicate latents if using classifier-free guidance
+                # Prepare transformer inputs
                 if self.do_classifier_free_guidance:
                     latents_in = torch.cat([latents, latents], dim=0)
-                    # Normalize timestep for the transformer
                     t_cont = (t.float() / self.scheduler.config.num_train_timesteps).view(1).repeat(2).to(device)
                 else:
                     latents_in = latents
-                    # Normalize timestep for the transformer
                     t_cont = (t.float() / self.scheduler.config.num_train_timesteps).view(1).to(device)
 
-                # Forward through transformer
-                noise_pred = self.transformer(
+                # Forward
+                noise_pred_head = self.transformer(
                     hidden_states=latents_in,
                     timestep=t_cont,
                     encoder_hidden_states=ca_embed,
@@ -724,21 +805,54 @@ class PhotonPipeline(
                     return_dict=False,
                 )[0]
 
-                # Apply CFG
-                if self.do_classifier_free_guidance:
-                    noise_uncond, noise_text = noise_pred.chunk(2, dim=0)
-                    noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
+                # ----- Conditional Tangential Amplifying Guidance -----
+                use_ctag_now = (
+                    getattr(self, "use_ctag", False)
+                    and (t.item() <= self.sta_tpd)
+                    and (t.item() >= self.end_tpd)
+                    and self.do_classifier_free_guidance
+                )
 
-                # Compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+                if use_ctag_now:
+                    head_u, head_c = noise_pred_head.chunk(2, dim=0)
+                    alpha_t, sigma_t = _alpha_sigma_from_sched(self.scheduler, t, latents.device, latents.dtype)
+                    alpha_t_b = alpha_t.view(1, 1, 1, 1)
+                    sigma_t_b = sigma_t.view(1, 1, 1, 1)
+                    
+                    _pred_type = _get_prediction_type(self.scheduler)
+                    eps_u = _head_to_eps(head_u, latents, alpha_t_b, sigma_t_b, _pred_type)
+                    eps_c = _head_to_eps(head_c, latents, alpha_t_b, sigma_t_b, _pred_type)
 
+                    s_u = -eps_u / (sigma_t_b + 1e-12)
+                    s_c = -eps_c / (sigma_t_b + 1e-12)
+                    n = latents / (latents.norm(p=2, dim=(1, 2, 3), keepdim=True) + 1e-8)
+
+                    g = s_c - s_u
+                    t_c = s_c - _proj_par(s_c, n)
+                    t_u = s_u - _proj_par(s_u, n)
+                    g_aligned = _proj(s_c, t_c - t_u)
+                    g = g + self.t_guidance_scale * g_aligned
+
+                    s_star = s_u + guidance_scale * g
+                    eps_star = -sigma_t_b * s_star
+                    model_out = _eps_to_head(eps_star, latents, alpha_t_b, sigma_t_b, _pred_type)
+
+                    latents = self.scheduler.step(model_out, t, latents, **extra_step_kwargs).prev_sample
+                else:
+                    # ----- normal CFG -----
+                    if self.do_classifier_free_guidance:
+                        head_u, head_c = noise_pred_head.chunk(2, dim=0)
+                        noise_pred_head = head_u + guidance_scale * (head_c - head_u)
+
+                    latents = self.scheduler.step(noise_pred_head, t, latents, **extra_step_kwargs).prev_sample
+
+                # Callbacks
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
                     for k in callback_on_step_end_tensor_inputs:
                         callback_kwargs[k] = locals()[k]
                     callback_on_step_end(self, i, t, callback_kwargs)
 
-                # Call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
 
