@@ -538,6 +538,7 @@ class QwenImageEditPlusPipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
+        generation_resolution: int = 1024 * 1024,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -628,7 +629,7 @@ class QwenImageEditPlusPipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
             returning a tuple, the first element is a list with the generated images.
         """
         image_size = image[-1].size if isinstance(image, list) else image.size
-        calculated_width, calculated_height = calculate_dimensions(1024 * 1024, image_size[0] / image_size[1])
+        calculated_width, calculated_height = calculate_dimensions(generation_resolution, image_size[0] / image_size[1])
         height = height or calculated_height
         width = width or calculated_width
 
@@ -677,7 +678,7 @@ class QwenImageEditPlusPipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                 condition_width, condition_height = calculate_dimensions(
                     CONDITION_IMAGE_SIZE, image_width / image_height
                 )
-                vae_width, vae_height = calculate_dimensions(VAE_IMAGE_SIZE, image_width / image_height)
+                vae_width, vae_height = calculate_dimensions(generation_resolution, image_width / image_height)
                 condition_image_sizes.append((condition_width, condition_height))
                 vae_image_sizes.append((vae_width, vae_height))
                 condition_images.append(self.image_processor.resize(img, condition_height, condition_width))
