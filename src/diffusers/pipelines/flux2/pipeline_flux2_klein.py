@@ -19,7 +19,6 @@ import numpy as np
 import PIL
 import torch
 from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM
-
 from ...loaders import Flux2LoraLoaderMixin
 from ...models import AutoencoderKLFlux2, Flux2Transformer2DModel
 from ...schedulers import FlowMatchEulerDiscreteScheduler
@@ -28,15 +27,24 @@ from ...utils.torch_utils import randn_tensor
 from ..pipeline_utils import DiffusionPipeline
 from .image_processor import Flux2ImageProcessor
 from .pipeline_output import Flux2PipelineOutput
-
-
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
 
     XLA_AVAILABLE = True
 else:
     XLA_AVAILABLE = False
-
+import torch.nn as nn
+import os
+TENSORRT_DIR = os.environ.get('TENSORRT_DIR', None)
+if TENSORRT_DIR is not None:
+    from photoroom_utils.production.runtimes.tensorrt_utils import TensorRTModelWrapper
+    import time
+    TRT_DENOISER_PATH = f'{TENSORRT_DIR}/Flux2Klein4BAIBackgroundDenoiserFP8.onnx_trt'
+    TRT_VAE_ENCODER_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeEncoderImageUint8ToLatentFP16.onnx_trt'
+    TRT_VAE_DECODER_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeDecoderFP16.onnx_trt'
+    TENSORRT_DENOISER = TensorRTModelWrapper(model_path=TRT_DENOISER_PATH)
+    TENSORRT_VAE_ENCODER = TensorRTModelWrapper(model_path=TRT_VAE_ENCODER_PATH)
+    TENSORRT_VAE_DECODER = TensorRTModelWrapper(model_path=TRT_VAE_DECODER_PATH)
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -151,6 +159,155 @@ def retrieve_latents(
     else:
         raise AttributeError("Could not access latents of provided encoder_output")
 
+import torch.nn as nn
+from typing import Callable, Union, Dict, Any
+
+
+def load_torchao_fp8_static_model(
+    *,
+    ckpt_path: str,
+    base_model_or_factory: Union[nn.Module, Callable[[], nn.Module]],
+    device: str = "cuda",
+    strict: bool = True,
+) -> nn.Module:
+    import torch
+    from typing import Callable, Union, Dict, Any
+
+    from torchao.quantization import quantize_, PerTensor, Float8StaticActivationFloat8WeightConfig
+    try:
+        from torchao.quantization import FqnToConfig
+    except ImportError:
+        from torchao.quantization import ModuleFqnToConfig as FqnToConfig
+
+
+    ckpt: Dict[str, Any] = torch.load(ckpt_path, map_location="cpu")
+
+    if not all(k in ckpt for k in ("state_dict", "act_scales", "fp8_dtype")):
+        raise ValueError(f"Checkpoint missing required keys. Found: {list(ckpt.keys())}")
+
+    # -------------------------
+    # Parse dtype
+    # -------------------------
+    dtype_str = str(ckpt["fp8_dtype"])
+    if "float8_e4m3fn" in dtype_str:
+        fp8_dtype = torch.float8_e4m3fn
+    elif "float8_e5m2" in dtype_str:
+        fp8_dtype = torch.float8_e5m2
+    else:
+        raise ValueError(f"Unsupported fp8 dtype string: {dtype_str}")
+
+    # -------------------------
+    # Normalize scales to fp32 scalar tensors
+    # -------------------------
+    act_scales_raw = {}
+    for k, v in ckpt["act_scales"].items():
+        if torch.is_tensor(v):
+            act_scales_raw[k] = v.detach().to(torch.float32).reshape(-1)[0]
+        else:
+            act_scales_raw[k] = torch.tensor(float(v), dtype=torch.float32)
+
+    # -------------------------
+    # Build model
+    # -------------------------
+    if isinstance(base_model_or_factory, nn.Module):
+        model = base_model_or_factory
+    else:
+        model = base_model_or_factory()
+
+    if model is None or not isinstance(model, nn.Module):
+        raise TypeError("base_model_or_factory must return an nn.Module")
+
+    model.eval().to(device)
+
+    # -------------------------
+    # Collect Linear FQNs
+    # -------------------------
+    linear_fqns = [fqn for fqn, m in model.named_modules() if isinstance(m, nn.Linear)]
+    linear_set = set(linear_fqns)
+
+    # -------------------------
+    # Auto-fix FQN prefix mismatch
+    # -------------------------
+    def score(keys):
+        return sum(1 for k in keys if k in linear_set)
+
+    candidates = []
+
+    # 1) identity
+    candidates.append(act_scales_raw)
+
+    # 2) strip "model."
+    stripped = {k[6:]: v for k, v in act_scales_raw.items() if k.startswith("model.")}
+    candidates.append(stripped)
+
+    # 3) add "model."
+    added = {("model." + k): v for k, v in act_scales_raw.items()}
+    candidates.append(added)
+
+    best = max(candidates, key=lambda d: score(d.keys()))
+    if score(best.keys()) == 0:
+        raise RuntimeError(
+            "Could not match any activation scale keys to Linear layers.\n"
+            f"Example Linear FQNs:\n{linear_fqns[:20]}\n\n"
+            f"Example scale keys:\n{list(act_scales_raw.keys())[:20]}"
+        )
+
+    act_scales = best
+
+    # -------------------------
+    # Build torchao config map
+    # -------------------------
+    fqn_to_cfg = {}
+    for fqn in linear_fqns:
+        if fqn in act_scales:
+            fqn_to_cfg[fqn] = Float8StaticActivationFloat8WeightConfig(
+                scale=act_scales[fqn],
+                activation_dtype=fp8_dtype,
+                weight_dtype=fp8_dtype,
+                granularity=PerTensor(),
+            )
+
+    if not fqn_to_cfg:
+        raise RuntimeError("No Linear layers matched activation scales.")
+
+    try:
+        cfg = FqnToConfig(fqn_to_config=fqn_to_cfg)
+    except TypeError:
+        cfg = FqnToConfig(fqn_to_cfg)
+
+    # -------------------------
+    # Quantize structure first
+    # -------------------------
+    quantize_(model, cfg, filter_fn=None, device=device)
+
+    # -------------------------
+    # Load weights (CRITICAL: assign=True)
+    # -------------------------
+    try:
+        missing, unexpected = model.load_state_dict(
+            ckpt["state_dict"],
+            strict=strict,
+            assign=True,  # <-- fixes copy_ dispatch error
+        )
+    except TypeError:
+        # Fallback if PyTorch too old
+        for name, tensor in ckpt["state_dict"].items():
+            module_name, attr = name.rsplit(".", 1)
+            mod = dict(model.named_modules())[module_name]
+            if isinstance(getattr(mod, attr), nn.Parameter):
+                setattr(mod, attr, nn.Parameter(tensor, requires_grad=False))
+            else:
+                setattr(mod, attr, tensor)
+        missing, unexpected = [], []
+
+    if strict and (missing or unexpected):
+        raise RuntimeError(f"load_state_dict mismatch. missing={missing} unexpected={unexpected}")
+
+    return model
+
+def build_base():
+    from photoroom_utils.production.hub.diffusion.flux2.flux2_denoiser import Flux2Klein4BDenoiserDiffusersFP8
+    return Flux2Klein4BDenoiserDiffusersFP8()
 
 class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
     r"""
@@ -203,6 +360,16 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
         self.image_processor = Flux2ImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
         self.tokenizer_max_length = 512
         self.default_sample_size = 128
+        if TENSORRT_DIR is None:
+            self.torchao_model = load_torchao_fp8_static_model(
+                ckpt_path="/raid/shared/datasets/flux2-klein-4b-denoiser-diffusers-fp8-torchao.pth",
+                base_model_or_factory=build_base,
+                device="cuda",
+                strict=True,
+            )
+            self.torchao_model.to(device="cuda")
+            print('TorchAO model loaded')
+        torch.cuda.empty_cache()
 
     @staticmethod
     def _get_qwen3_prompt_embeds(
@@ -258,7 +425,7 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
 
         batch_size, num_channels, seq_len, hidden_dim = out.shape
         prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
-
+        #print(prompt_embeds.shape, prompt_embeds.dtype)
         return prompt_embeds
 
     @staticmethod
@@ -467,7 +634,7 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
         latents_bn_mean = self.vae.bn.running_mean.view(1, -1, 1, 1).to(image_latents.device, image_latents.dtype)
         latents_bn_std = torch.sqrt(self.vae.bn.running_var.view(1, -1, 1, 1) + self.vae.config.batch_norm_eps)
         image_latents = (image_latents - latents_bn_mean) / latents_bn_std
-
+        print(image_latents.shape)
         return image_latents
 
     # Copied from diffusers.pipelines.flux2.pipeline_flux2.Flux2Pipeline.prepare_latents
@@ -516,9 +683,14 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
         image_latents = []
         for image in images:
             image = image.to(device=device, dtype=dtype)
-            imagge_latent = self._encode_vae_image(image=image, generator=generator)
+            if TENSORRT_DIR is not None:
+                inputs = {
+                    "image": image.to(torch.uint8),
+                }
+                imagge_latent = TENSORRT_VAE_ENCODER(inputs)['latent']
+            else:
+                imagge_latent = self._encode_vae_image(image=image, generator=generator)
             image_latents.append(imagge_latent)  # (1, 128, 32, 32)
-
         image_latent_ids = self._prepare_image_ids(image_latents)
 
         # Pack each latent and concatenate
@@ -627,6 +799,7 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
         text_encoder_out_layers: Tuple[int] = (9, 18, 27),
+        index_to_use: int = 0,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -840,16 +1013,53 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
                     latent_image_ids = torch.cat([latent_ids, image_latent_ids], dim=1)
 
                 with self.transformer.cache_context("cond"):
-                    noise_pred = self.transformer(
-                        hidden_states=latent_model_input,  # (B, image_seq_len, C)
-                        timestep=timestep / 1000,
-                        guidance=None,
-                        encoder_hidden_states=prompt_embeds,
-                        txt_ids=text_ids,  # B, text_seq_len, 4
-                        img_ids=latent_image_ids,  # B, image_seq_len, 4
-                        joint_attention_kwargs=self.attention_kwargs,
-                        return_dict=False,
-                    )[0]
+                    if TENSORRT_DENOISER is not None:
+                        inputs = {
+                            "latent": latent_model_input,
+                            "timestep": timestep / 1000,
+                            "cross_attn_conditioning": prompt_embeds,
+                            "text_ids": text_ids,
+                            "image_ids": latent_image_ids,
+                        }
+                        noise_pred = TENSORRT_DENOISER(
+                            inputs=inputs,
+                        )['noise_prediction_t']
+                    else:
+                        # INSERT_YOUR_CODE
+                        # import os
+                        # global_step = index_to_use * 4 + i
+                        # save_dir = f"/raid/shared/datasets/fluxt2i-calib/{global_step}"
+                        # os.makedirs(save_dir, exist_ok=True)
+
+                        # to_save = {
+                        #     "latent_model_input": latent_model_input.detach().cpu(),
+                        #     "timestep": (timestep / 1000).detach().cpu(),
+                        #     "prompt_embeds": prompt_embeds.detach().cpu() if hasattr(prompt_embeds, "detach") else prompt_embeds,
+                        #     "text_idx": text_ids.detach().cpu() if hasattr(text_ids, "detach") else text_ids,
+                        #     "latent_image_ids": latent_image_ids.detach().cpu() if hasattr(latent_image_ids, "detach") else latent_image_ids,
+                        # }
+
+                        # save_path = os.path.join(save_dir, f"checkpoint.pt")
+                        # torch.save(to_save, save_path)
+
+                        # noise_pred = self.torchao_model(
+                        #     latent=latent_model_input.to('cuda'),  # (B, image_seq_len, C)
+                        #     timestep=timestep.to('cuda') / 1000,
+                        #     cross_attn_conditioning=prompt_embeds.to('cuda'),
+                        #     text_ids=text_ids.to('cuda'),  # B, text_seq_len, 4
+                        #     image_ids=latent_image_ids.to('cuda'),  # B, image_seq_len, 4
+                        # )
+
+                        noise_pred = self.transformer(
+                            hidden_states=latent_model_input,  # (B, image_seq_len, C)
+                            timestep=timestep / 1000,
+                            guidance=None,
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,  # B, text_seq_len, 4
+                            img_ids=latent_image_ids,  # B, image_seq_len, 4
+                            joint_attention_kwargs=self.attention_kwargs,
+                            return_dict=False,
+                        )[0]
 
                 noise_pred = noise_pred[:, : latents.size(1) :]
 
@@ -906,7 +1116,19 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
         if output_type == "latent":
             image = latents
         else:
-            image = self.vae.decode(latents, return_dict=False)[0]
+            if TENSORRT_DIR is not None:
+                inputs = {
+                    "latent": latents.to(torch.float16),
+                }
+                print(latents.shape)
+                image = TENSORRT_VAE_DECODER(inputs)['generated_image']
+            else:
+                image = self.vae.decode(latents, return_dict=False)[0]
+            # The original operation in flux2_vae.py is:
+            # image = decoded.div(2).add(0.5).clamp(0, 1).mul(255)
+            # To reverse: image that has been scaled to [0,255], clamp, then .div(255).sub(0.5).mul(2)
+            # This returns image values to [-1, 1] range before further processing.
+            image = image.clamp(0, 255).div(255).sub(0.5).mul(2)
             image = self.image_processor.postprocess(image, output_type=output_type)
 
         # Offload all models

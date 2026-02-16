@@ -169,7 +169,8 @@ class VaeImageProcessor(ConfigMixin):
         """
         if not isinstance(images, list):
             images = [images]
-        images = [np.array(image).astype(np.float32) / 255.0 for image in images]
+        #images = [np.array(image).astype(np.float32) / 255.0 for image in images]
+        images = [np.array(image).astype(np.float32) for image in images]
         images = np.stack(images, axis=0)
 
         return images
@@ -726,6 +727,7 @@ class VaeImageProcessor(ConfigMixin):
 
         # expected range [0,1], normalize to [-1,1]
         do_normalize = self.config.do_normalize
+        do_normalize = False
         if do_normalize and image.min() < 0:
             warnings.warn(
                 "Passing `image` as torch tensor with value range in [-1,1] is deprecated. The expected value range for image tensor is [0,1] "
