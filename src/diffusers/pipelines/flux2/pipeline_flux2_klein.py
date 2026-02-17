@@ -36,15 +36,6 @@ else:
 import torch.nn as nn
 import os
 TENSORRT_DIR = os.environ.get('TENSORRT_DIR', None)
-if TENSORRT_DIR is not None:
-    from photoroom_utils.production.runtimes.tensorrt_utils import TensorRTModelWrapper
-    import time
-    TRT_DENOISER_PATH = f'{TENSORRT_DIR}/Flux2Klein4BAIBackgroundDenoiserFP8.onnx_trt'
-    TRT_VAE_ENCODER_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeEncoderImageUint8ToLatentFP16.onnx_trt'
-    TRT_VAE_DECODER_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeDecoderFP16.onnx_trt'
-    TENSORRT_DENOISER = TensorRTModelWrapper(model_path=TRT_DENOISER_PATH)
-    TENSORRT_VAE_ENCODER = TensorRTModelWrapper(model_path=TRT_VAE_ENCODER_PATH)
-    TENSORRT_VAE_DECODER = TensorRTModelWrapper(model_path=TRT_VAE_DECODER_PATH)
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -360,6 +351,17 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
         self.image_processor = Flux2ImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
         self.tokenizer_max_length = 512
         self.default_sample_size = 128
+        if TENSORRT_DIR is not None:
+            from photoroom_utils.production.runtimes.tensorrt_utils import TensorRTModelWrapper
+            import time
+            print(f"Loading TensorRT models from {TENSORRT_DIR}")
+            self.TRT_DENOISER_PATH = f'{TENSORRT_DIR}/Flux2Klein4BAIBackgroundDenoiserFP8.onnx_trt'
+            self.TRT_VAE_ENCODER_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeEncoderImageUint8ToLatentFP16.onnx_trt'
+            self.TRT_VAE_DECODER_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeDecoderFP16.onnx_trt'
+            self.TENSORRT_DENOISER = TensorRTModelWrapper(model_path=self.TRT_DENOISER_PATH)
+            self.TENSORRT_VAE_ENCODER = TensorRTModelWrapper(model_path=self.TRT_VAE_ENCODER_PATH)
+            self.TENSORRT_VAE_DECODER = TensorRTModelWrapper(model_path=self.TRT_VAE_DECODER_PATH)
+
         if TENSORRT_DIR is None:
             self.torchao_model = load_torchao_fp8_static_model(
                 ckpt_path="/raid/shared/datasets/flux2-klein-4b-denoiser-diffusers-fp8-torchao.pth",
@@ -683,11 +685,11 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
         image_latents = []
         for image in images:
             image = image.to(device=device, dtype=dtype)
-            if TENSORRT_DIR is not None:
+            if self.TENSORRT_VAE_ENCODER is not None:
                 inputs = {
                     "image": image.to(torch.uint8),
                 }
-                imagge_latent = TENSORRT_VAE_ENCODER(inputs)['latent']
+                imagge_latent = self.TENSORRT_VAE_ENCODER(inputs)['latent']
             else:
                 imagge_latent = self._encode_vae_image(image=image, generator=generator)
             image_latents.append(imagge_latent)  # (1, 128, 32, 32)
@@ -1013,7 +1015,7 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
                     latent_image_ids = torch.cat([latent_ids, image_latent_ids], dim=1)
 
                 with self.transformer.cache_context("cond"):
-                    if TENSORRT_DENOISER is not None:
+                    if self.TENSORRT_DENOISER is not None:
                         inputs = {
                             "latent": latent_model_input,
                             "timestep": timestep / 1000,
@@ -1021,7 +1023,7 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
                             "text_ids": text_ids,
                             "image_ids": latent_image_ids,
                         }
-                        noise_pred = TENSORRT_DENOISER(
+                        noise_pred = self.TENSORRT_DENOISER(
                             inputs=inputs,
                         )['noise_prediction_t']
                     else:
@@ -1116,12 +1118,12 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
         if output_type == "latent":
             image = latents
         else:
-            if TENSORRT_DIR is not None:
+            if self.TENSORRT_VAE_DECODER is not None:
                 inputs = {
                     "latent": latents.to(torch.float16),
                 }
                 print(latents.shape)
-                image = TENSORRT_VAE_DECODER(inputs)['generated_image']
+                image = self.TENSORRT_VAE_DECODER(inputs)['generated_image']
             else:
                 image = self.vae.decode(latents, return_dict=False)[0]
             # The original operation in flux2_vae.py is:
