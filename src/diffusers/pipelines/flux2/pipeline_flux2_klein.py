@@ -357,9 +357,18 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
             print(f"Loading TensorRT models from {TENSORRT_DIR}")
             self.TRT_DENOISER_PATH = f'{TENSORRT_DIR}/Flux2Klein4BAIBackgroundDenoiserFP8.onnx_trt'
             self.TRT_VAE_ENCODER_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeEncoderImageUint8ToLatentFP16.onnx_trt'
+            self.TRT_VAE_ENCODER_64x64_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeEncoder64x64ImageUint8ToLatentFP16.onnx_trt'
             self.TRT_VAE_DECODER_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeDecoderFP16.onnx_trt'
+            print(f"Loading TensorRT denoiser from {self.TRT_DENOISER_PATH}")
             self.TENSORRT_DENOISER = TensorRTModelWrapper(model_path=self.TRT_DENOISER_PATH)
+            print(f"Loading TensorRT VAE encoder from {self.TRT_VAE_ENCODER_PATH}")
             self.TENSORRT_VAE_ENCODER = TensorRTModelWrapper(model_path=self.TRT_VAE_ENCODER_PATH)
+            if os.path.exists(self.TRT_VAE_ENCODER_64x64_PATH):
+                print(f"Loading TensorRT VAE encoder 64x64 from {self.TRT_VAE_ENCODER_64x64_PATH}")
+                self.TENSORRT_VAE_ENCODER_64X64 = TensorRTModelWrapper(model_path=self.TRT_VAE_ENCODER_64x64_PATH)
+            else:
+                self.TENSORRT_VAE_ENCODER_64X64 = None
+            print(f"Loading TensorRT VAE decoder from {self.TRT_VAE_DECODER_PATH}")
             self.TENSORRT_VAE_DECODER = TensorRTModelWrapper(model_path=self.TRT_VAE_DECODER_PATH)
 
         if TENSORRT_DIR is None:
@@ -682,14 +691,15 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
         device,
         dtype,
     ):
-        image_latents = []
+        image_latents = []            
         for image in images:
             image = image.to(device=device, dtype=dtype)
-            if self.TENSORRT_VAE_ENCODER is not None:
+            vae_trt = self.TENSORRT_VAE_ENCODER_64X64 if image.shape[1:3] == (64, 64) else self.TENSORRT_VAE_ENCODER
+            if vae_trt is not None:
                 inputs = {
                     "image": image.to(torch.uint8),
                 }
-                imagge_latent = self.TENSORRT_VAE_ENCODER(inputs)['latent']
+                imagge_latent = vae_trt(inputs)['latent']
             else:
                 imagge_latent = self._encode_vae_image(image=image, generator=generator)
             image_latents.append(imagge_latent)  # (1, 128, 32, 32)
