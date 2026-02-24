@@ -14,7 +14,7 @@
 
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
+import time
 import numpy as np
 import PIL
 import torch
@@ -355,7 +355,7 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
             from photoroom_utils.production.runtimes.tensorrt_utils import TensorRTModelWrapper
             import time
             print(f"Loading TensorRT models from {TENSORRT_DIR}")
-            self.TRT_DENOISER_PATH = f'{TENSORRT_DIR}/Flux2Klein4BAIBackgroundDenoiserFP8.onnx_trt'
+            self.TRT_DENOISER_PATH = f'{TENSORRT_DIR}/Flux2Klein4bRecolorDenoiserV1FP8.onnx_trt'
             self.TRT_VAE_ENCODER_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeEncoderImageUint8ToLatentFP16.onnx_trt'
             self.TRT_VAE_ENCODER_64x64_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeEncoder64x64ImageUint8ToLatentFP16.onnx_trt'
             self.TRT_VAE_DECODER_PATH = f'{TENSORRT_DIR}/Flux2KleinVaeDecoderFP16.onnx_trt'
@@ -694,7 +694,8 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
         image_latents = []            
         for image in images:
             image = image.to(device=device, dtype=dtype)
-            vae_trt = self.TENSORRT_VAE_ENCODER_64X64 if image.shape[1:3] == (64, 64) else self.TENSORRT_VAE_ENCODER
+            vae_trt = self.TENSORRT_VAE_ENCODER_64X64 if image.shape[2:4] == (64, 64) else self.TENSORRT_VAE_ENCODER
+
             if vae_trt is not None:
                 inputs = {
                     "image": image.to(torch.uint8),
@@ -1132,7 +1133,6 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
                 inputs = {
                     "latent": latents.to(torch.float16),
                 }
-                print(latents.shape)
                 image = self.TENSORRT_VAE_DECODER(inputs)['generated_image']
             else:
                 image = self.vae.decode(latents, return_dict=False)[0]
