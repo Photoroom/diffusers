@@ -126,6 +126,12 @@ class TextPreprocessor:
             + r"]{1,}"
         )
 
+    def basic_clean(self, text: str) -> str:
+        """Light cleaning (fix mojibake + unescape HTML). Used by encoders trained without DeepFloyd cleaning."""
+        text = ftfy.fix_text(text)
+        text = html.unescape(html.unescape(text))
+        return text.strip()
+
     def clean_text(self, text: str) -> str:
         """Clean text using comprehensive text processing logic."""
         # See Deepfloyd https://github.com/deep-floyd/IF/blob/develop/deepfloyd_if/modules/t5.py
@@ -298,6 +304,20 @@ class PRXPipeline(
         self.text_preprocessor = TextPreprocessor()
         self.default_sample_size = default_sample_size
         self._guidance_scale = 1.0
+        # Max number of text tokens. When None, falls back to the tokenizer's own ``model_max_length``.
+        # Subclasses (e.g. the PRXPixel pipeline, whose Qwen tokenizer has a very large model_max_length)
+        # can pin this to the value used at training time.
+        self.tokenizer_max_length = None
+        # When True, prompts get only light cleaning (``basic_clean``) instead of the DeepFloyd ``clean_text``.
+        # Set by subclasses whose text encoder was trained without the heavy cleaning (e.g. the Qwen tower).
+        self.skip_text_cleaning = False
+        # What the transformer predicts. "flow_matching" -> velocity (consumed directly by the scheduler).
+        # "x_prediction_flow_matching" -> the clean sample x0, converted to velocity before each scheduler step
+        # (see "Back to Basics: Let Denoising Generative Models Denoise", https://arxiv.org/abs/2511.13720).
+        self.prediction_type = "flow_matching"
+        # Standard deviation of the initial noise. Some PRX variants train with a non-unit noise scale and must
+        # start sampling from `randn * noise_scale` to match the learned flow-matching trajectory.
+        self.noise_scale = 1.0
 
         self.register_modules(
             transformer=transformer,
@@ -363,7 +383,7 @@ class PRXPipeline(
                 width // spatial_compression,
             )
             shape = (batch_size, num_channels_latents, latent_height, latent_width)
-            latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype) * self.noise_scale
         else:
             latents = latents.to(device)
         return latents
@@ -422,11 +442,13 @@ class PRXPipeline(
 
     def _tokenize_prompts(self, prompts: list[str], device: torch.device):
         """Tokenize and clean prompts."""
-        cleaned = [self.text_preprocessor.clean_text(text) for text in prompts]
+        clean_fn = self.text_preprocessor.basic_clean if self.skip_text_cleaning else self.text_preprocessor.clean_text
+        cleaned = [clean_fn(text) for text in prompts]
+        max_length = self.tokenizer_max_length or self.tokenizer.model_max_length
         tokens = self.tokenizer(
             cleaned,
             padding="max_length",
-            max_length=self.tokenizer.model_max_length,
+            max_length=max_length,
             truncation=True,
             return_attention_mask=True,
             return_tensors="pt",
@@ -627,12 +649,15 @@ class PRXPipeline(
         height = height or default_resolution
         width = width or default_resolution
 
+        if use_resolution_binning and self.image_processor is None:
+            # Pixel-space / no-VAE pipelines have no image_processor and cannot bin; disable it transparently.
+            logger.warning(
+                "Resolution binning requires a VAE with image_processor, but none is available; "
+                "proceeding with use_resolution_binning=False."
+            )
+            use_resolution_binning = False
+
         if use_resolution_binning:
-            if self.image_processor is None:
-                raise ValueError(
-                    "Resolution binning requires a VAE with image_processor, but VAE is not available. "
-                    "Set use_resolution_binning=False or provide a VAE."
-                )
             if self.default_sample_size not in ASPECT_RATIO_BINS:
                 raise ValueError(
                     f"Resolution binning is only supported for default_sample_size in {list(ASPECT_RATIO_BINS.keys())}, "
@@ -762,6 +787,12 @@ class PRXPipeline(
                 if self.do_classifier_free_guidance:
                     noise_uncond, noise_text = noise_pred.chunk(2, dim=0)
                     noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
+
+                # If the model predicts the clean sample x0, convert it to the flow-matching velocity
+                # the scheduler expects: v = (x_t - x0) / t  (t = normalized noise level, clamped for stability).
+                if self.prediction_type == "x_prediction_flow_matching":
+                    t_x = torch.clamp(t.float() / self.scheduler.config.num_train_timesteps, min=0.05)
+                    noise_pred = (latents - noise_pred) / t_x
 
                 # Compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
