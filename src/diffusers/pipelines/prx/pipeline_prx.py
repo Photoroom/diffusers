@@ -18,7 +18,6 @@ import re
 import urllib.parse as ul
 from typing import Callable
 
-import ftfy
 import torch
 from transformers import (
     AutoTokenizer,
@@ -34,12 +33,12 @@ from diffusers.models.transformers.transformer_prx import PRXTransformer2DModel
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.prx.pipeline_output import PRXPipelineOutput
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-from diffusers.utils import (
-    logging,
-    replace_example_docstring,
-)
+from diffusers.utils import is_ftfy_available, logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 
+
+if is_ftfy_available():
+    import ftfy
 
 DEFAULT_RESOLUTION = 512
 
@@ -650,9 +649,10 @@ class PRXPipeline(
         width = width or default_resolution
 
         if use_resolution_binning and self.image_processor is None:
-            # Pixel-space / no-VAE pipelines have no image_processor and cannot bin; disable it transparently.
+            # Latent-space pipelines constructed without a VAE have no image_processor and cannot bin;
+            # disable it transparently.
             logger.warning(
-                "Resolution binning requires a VAE with image_processor, but none is available; "
+                "Resolution binning requires an image processor, but none is available; "
                 "proceeding with use_resolution_binning=False."
             )
             use_resolution_binning = False
@@ -681,9 +681,9 @@ class PRXPipeline(
             negative_prompt_embeds,
         )
 
-        if self.vae is None and output_type not in ["latent", "pt"]:
+        if self.vae is None and self.image_processor is None and output_type not in ["latent", "pt"]:
             raise ValueError(
-                f"VAE is required for output_type='{output_type}' but it is not available. "
+                f"output_type='{output_type}' requires a VAE or an image processor, but neither is available. "
                 "Either provide a VAE or set output_type='latent' or 'pt' to get latent outputs."
             )
 
@@ -808,15 +808,19 @@ class PRXPipeline(
                     progress_bar.update()
 
         # 8. Post-processing
-        if output_type == "latent" or (output_type == "pt" and self.vae is None):
+        if output_type == "latent" or (output_type == "pt" and self.image_processor is None):
             image = latents
         else:
-            # Unscale latents for VAE (supports both AutoencoderKL and AutoencoderDC)
-            scaling_factor = getattr(self.vae.config, "scaling_factor", 0.18215)
-            shift_factor = getattr(self.vae.config, "shift_factor", 0.0)
-            latents = (latents / scaling_factor) + shift_factor
-            # Decode using VAE (AutoencoderKL or AutoencoderDC)
-            image = self.vae.decode(latents, return_dict=False)[0]
+            if self.vae is not None:
+                # Unscale latents for VAE (supports both AutoencoderKL and AutoencoderDC)
+                scaling_factor = getattr(self.vae.config, "scaling_factor", 0.18215)
+                shift_factor = getattr(self.vae.config, "shift_factor", 0.0)
+                latents = (latents / scaling_factor) + shift_factor
+                # Decode using VAE (AutoencoderKL or AutoencoderDC)
+                image = self.vae.decode(latents, return_dict=False)[0]
+            else:
+                # Pixel-space pipelines have no VAE: the denoised latents are already images in [-1, 1].
+                image = latents
             # Resize back to original resolution if using binning
             if use_resolution_binning:
                 image = self.image_processor.resize_and_crop_tensor(image, orig_width, orig_height)

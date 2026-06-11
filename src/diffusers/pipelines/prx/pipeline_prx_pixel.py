@@ -14,6 +14,7 @@
 
 from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
+from ...image_processor import PixArtImageProcessor
 from ...models import AutoencoderDC, AutoencoderKL
 from ...models.transformers.transformer_prx import PRXTransformer2DModel
 from ...schedulers import FlowMatchEulerDiscreteScheduler
@@ -93,6 +94,11 @@ class PRXPixelPipeline(PRXPipeline):
         # they are written to `model_index.json` and restored on `from_pretrained` (otherwise they silently fall back
         # to the constructor defaults).
         self.register_to_config(prompt_max_tokens=prompt_max_tokens, noise_scale=noise_scale)
+
+        if self.image_processor is None:
+            # Without a VAE the denoised latents are already images in [-1, 1]; an image processor with
+            # vae_scale_factor=1 is all that is needed to support output_type="pil"/"np" and resolution binning.
+            self.image_processor = PixArtImageProcessor(vae_scale_factor=self.vae_scale_factor)
 
     @property
     def vae_scale_factor(self):

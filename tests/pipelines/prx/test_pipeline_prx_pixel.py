@@ -27,9 +27,6 @@ class PRXPixelPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     test_layerwise_casting = True
     test_group_offloading = True
 
-    # Pixel-space PRX has no VAE, so PIL/np output paths are unavailable; outputs are raw RGB tensors ("pt").
-    output_type = "pt"
-
     @classmethod
     def setUpClass(cls):
         # Ensure PRXPixelPipeline has an _execution_device property expected by __call__
@@ -116,10 +113,11 @@ class PRXPixelPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         device = "cpu"
         pipe = self._build_pipe(device)
 
-        # No VAE -> identity pixel space, vae_scale_factor == 1.
+        # No VAE -> identity pixel space, vae_scale_factor == 1, but postprocessing still works
+        # through an image processor so output_type="pil"/"np" are supported.
         self.assertIsNone(pipe.vae)
         self.assertEqual(pipe.vae_scale_factor, 1)
-        self.assertIsNone(pipe.image_processor)
+        self.assertIsNotNone(pipe.image_processor)
 
         inputs = self.get_dummy_inputs(device)
         image = pipe(**inputs)[0]
@@ -191,18 +189,24 @@ class PRXPixelPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         image = pipe(**inputs)[0]
         self.assertEqual(image[0].shape, (3, 32, 32))
 
-    def test_resolution_binning_disabled_without_image_processor(self):
-        # Pixel-space pipelines have no image_processor; use_resolution_binning=True must be
-        # transparently disabled (warning) rather than raising.
+    def test_inference_pil_and_np_output(self):
+        # The default output_type="pil" must work without a VAE: the denoised pixels are denormalized
+        # directly by the image processor instead of being decoded.
         device = "cpu"
         pipe = self._build_pipe(device)
-        self.assertIsNone(pipe.image_processor)
 
         inputs = self.get_dummy_inputs(device)
-        inputs["use_resolution_binning"] = True
-        # Should not raise despite default_sample_size=1024 not being a binnable scenario without a processor.
-        image = pipe(**inputs)[0]
-        self.assertEqual(image[0].shape, (3, 32, 32))
+        inputs.pop("output_type")  # default is "pil"
+        images = pipe(**inputs).images
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].size, (32, 32))
+
+        inputs = self.get_dummy_inputs(device)
+        inputs["output_type"] = "np"
+        images = pipe(**inputs).images
+        self.assertEqual(images.shape, (1, 32, 32, 3))
+        self.assertGreaterEqual(images.min(), 0.0)
+        self.assertLessEqual(images.max(), 1.0)
 
     def test_callback_inputs(self):
         device = "cpu"
