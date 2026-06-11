@@ -14,11 +14,11 @@
 
 from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
-from diffusers.models import AutoencoderDC, AutoencoderKL
-from diffusers.models.transformers.transformer_prx import PRXTransformer2DModel
-from diffusers.pipelines.prx.pipeline_prx import PRXPipeline
-from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-from diffusers.utils import logging
+from ...models import AutoencoderDC, AutoencoderKL
+from ...models.transformers.transformer_prx import PRXTransformer2DModel
+from ...schedulers import FlowMatchEulerDiscreteScheduler
+from ...utils import logging
+from .pipeline_prx import PRXPipeline
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -33,11 +33,11 @@ class PRXPixelPipeline(PRXPipeline):
     r"""
     Pipeline for text-to-image generation with the PRXPixel model.
 
-    PRXPixel is a pixel-space variant of [`PRXPipeline`]: it denoises raw RGB directly (the VAE is an identity /
-    absent component), conditions on a Qwen3-VL text encoder rather than T5Gemma, and feeds the latent resolution
-    into the timestep modulation (`resolution_embeds=True` on the [`PRXTransformer2DModel`]). The denoising loop,
-    prompt encoding, latent preparation and CFG handling are all inherited from [`PRXPipeline`]; only the component
-    types, the text-token budget, the (lighter) prompt cleaning, and the default resolution differ.
+    PRXPixel is a pixel-space variant of [`PRXPipeline`]: it denoises raw RGB directly (the VAE is an identity / absent
+    component), conditions on a Qwen3-VL text encoder rather than T5Gemma, and feeds the latent resolution into the
+    timestep modulation (`resolution_embeds=True` on the [`PRXTransformer2DModel`]). The denoising loop, prompt
+    encoding, latent preparation and CFG handling are all inherited from [`PRXPipeline`]; only the component types, the
+    text-token budget, the (lighter) prompt cleaning, and the default resolution differ.
 
     This pipeline inherits from [`PRXPipeline`]. Check the superclass documentation for the generic methods (text
     encoding, latent preparation, the `__call__` signature, ...).
@@ -88,6 +88,11 @@ class PRXPixelPipeline(PRXPipeline):
         self.prediction_type = "x_prediction_flow_matching"
         # PRXPixel trains with a non-unit initial-noise scale; sampling must start from randn * noise_scale.
         self.noise_scale = noise_scale
+
+        # `super().__init__` already registered `default_sample_size`; register the extra scalar __init__ args too so
+        # they are written to `model_index.json` and restored on `from_pretrained` (otherwise they silently fall back
+        # to the constructor defaults).
+        self.register_to_config(prompt_max_tokens=prompt_max_tokens, noise_scale=noise_scale)
 
     @property
     def vae_scale_factor(self):

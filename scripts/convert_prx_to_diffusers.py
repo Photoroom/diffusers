@@ -130,7 +130,7 @@ def load_denoiser_state_dict(checkpoint_path: str, prefix: str = DENOISER_PREFIX
         print(f"  Reading {len(keys)} denoiser tensors (skipping optimizer / EMA / RNG state)...")
         nested = _load_state_dict_from_keys(keys, storage_reader=reader)
         flat = _flatten(nested)
-        state_dict = {k[len(prefix):]: v for k, v in flat.items() if k.startswith(prefix)}
+        state_dict = {k[len(prefix) :]: v for k, v in flat.items() if k.startswith(prefix)}
     else:
         print(f"Loading single-file checkpoint from: {checkpoint_path}")
         if not os.path.exists(checkpoint_path):
@@ -142,7 +142,7 @@ def load_denoiser_state_dict(checkpoint_path: str, prefix: str = DENOISER_PREFIX
             state_dict = ckpt
         # Strip a denoiser prefix if the keys carry one.
         if any(k.startswith(prefix) for k in state_dict):
-            state_dict = {k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)}
+            state_dict = {k[len(prefix) :]: v for k, v in state_dict.items() if k.startswith(prefix)}
 
     print(f"✓ Loaded {len(state_dict)} denoiser parameters")
     return state_dict
@@ -361,7 +361,9 @@ def main(args):
     if args.skip_text_encoder:
         print("Skipped text encoder; verifying the transformer reloads from disk...")
         reloaded = PRXTransformer2DModel.from_pretrained(transformer_path)
-        print(f"✓ Transformer reloaded: {type(reloaded).__name__} ({sum(p.numel() for p in reloaded.parameters()):,} params)")
+        print(
+            f"✓ Transformer reloaded: {type(reloaded).__name__} ({sum(p.numel() for p in reloaded.parameters()):,} params)"
+        )
     else:
         from diffusers import PRXPipeline, PRXPixelPipeline
 

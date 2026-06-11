@@ -2492,7 +2492,7 @@ class PixArtSigmaPipeline(metaclass=DummyObject):
         requires_backends(cls, ["torch", "transformers"])
 
 
-class PRXPixelPipeline(metaclass=DummyObject):
+class PRXPipeline(metaclass=DummyObject):
     _backends = ["torch", "transformers"]
 
     def __init__(self, *args, **kwargs):
@@ -2507,7 +2507,7 @@ class PRXPixelPipeline(metaclass=DummyObject):
         requires_backends(cls, ["torch", "transformers"])
 
 
-class PRXPipeline(metaclass=DummyObject):
+class PRXPixelPipeline(metaclass=DummyObject):
     _backends = ["torch", "transformers"]
 
     def __init__(self, *args, **kwargs):

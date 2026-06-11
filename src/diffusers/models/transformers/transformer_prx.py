@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
+from typing import Any, Optional
 
 import torch
 from torch import nn
@@ -360,8 +360,8 @@ class PRXResolutionEmbedder(nn.Module):
             flip_sin_to_cos=True,
             downscale_freq_shift=0.0,
         )
-        hw_emb = torch.cat([h_emb, w_emb], dim=-1).to(self.mlp.in_layer.weight.dtype)
-        return self.mlp(hw_emb).to(dtype)
+        hw_emb = torch.cat([h_emb, w_emb], dim=-1).to(dtype)
+        return self.mlp(hw_emb)
 
 
 class Modulation(nn.Module):
@@ -657,9 +657,9 @@ class PRXTransformer2DModel(ModelMixin, ConfigMixin, AttentionMixin):
         time_max_period (`int`, *optional*, defaults to 10000):
             Maximum frequency period for timestep embeddings.
         bottleneck_size (`int`, *optional*):
-            If set, the image patch projection (`img_in`) uses a two-layer bottleneck
-            (`patch_dim -> bottleneck_size -> hidden_size`) instead of a single linear layer. Used by the pixel-space
-            PRX-7B variant where the patch dimension is large.
+            If set, the image patch projection (`img_in`) uses a two-layer bottleneck (`patch_dim -> bottleneck_size ->
+            hidden_size`) instead of a single linear layer. Used by the pixel-space PRX-7B variant where the patch
+            dimension is large.
         resolution_embeds (`bool`, *optional*, defaults to `False`):
             Whether to condition the timestep modulation on the latent resolution `(H, W)` via a
             `PRXResolutionEmbedder`. Used by the PRX-7B variant.
@@ -716,7 +716,7 @@ class PRXTransformer2DModel(ModelMixin, ConfigMixin, AttentionMixin):
         theta: int = 10000,
         time_factor: float = 1000.0,
         time_max_period: int = 10000,
-        bottleneck_size: int = None,
+        bottleneck_size: Optional[int] = None,
         resolution_embeds: bool = False,
     ):
         super().__init__()

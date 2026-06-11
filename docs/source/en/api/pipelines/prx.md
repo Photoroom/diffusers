@@ -17,6 +17,8 @@
 
 PRX generates high-quality images from text using a simplified MMDIT architecture where text tokens don't update through transformer blocks. It employs flow matching with discrete scheduling for efficient sampling and uses Google's T5Gemma-2B-2B-UL2 model for multi-language text encoding. The ~1.3B parameter transformer delivers fast inference without sacrificing quality. You can choose between Flux VAE (8x compression, 16 latent channels) for balanced quality and speed or DC-AE (32x compression, 32 latent channels) for latent compression and faster processing.
 
+[`PRXPipeline`] runs in the VAE latent space, while [`PRXPixelPipeline`] is a pixel-space variant that operates directly on RGB pixels without a VAE.
+
 ## Available models
 
 PRX offers multiple variants with different VAE configurations, each optimized for specific resolutions. Base models excel with detailed prompts, capturing complex compositions and subtle details. Fine-tuned models trained on the [Alchemist dataset](https://huggingface.co/datasets/yandex/alchemist) improve aesthetic quality, especially with simpler prompts.
@@ -123,6 +125,12 @@ pipe.enable_sequential_cpu_offload()
 ## PRXPipeline
 
 [[autodoc]] PRXPipeline
+  - all
+  - __call__
+
+## PRXPixelPipeline
+
+[[autodoc]] PRXPixelPipeline
   - all
   - __call__
 
