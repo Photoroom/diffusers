@@ -208,6 +208,33 @@ class PRXPixelPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         self.assertGreaterEqual(images.min(), 0.0)
         self.assertLessEqual(images.max(), 1.0)
 
+    def test_non_multiple_size_raises(self):
+        # height/width must be divisible by vae_scale_factor * transformer patch_size; check_inputs must raise
+        # a clear ValueError instead of letting the transformer fail on an invalid reshape mid-denoising.
+        device = "cpu"
+        components = self.get_dummy_components()
+        torch.manual_seed(0)
+        components["transformer"] = PRXTransformer2DModel(
+            patch_size=2,
+            in_channels=3,
+            context_in_dim=16,
+            hidden_size=8,
+            mlp_ratio=2.0,
+            num_heads=2,
+            depth=1,
+            axes_dim=[2, 2],
+            bottleneck_size=8,
+            resolution_embeds=True,
+        )
+        pipe = PRXPixelPipeline(**components)
+        pipe.to(device)
+        pipe.set_progress_bar_config(disable=None)
+
+        inputs = self.get_dummy_inputs(device)
+        inputs["height"] = 31  # vae_scale_factor (1) * patch_size (2) = 2; 31 is not a multiple
+        with self.assertRaisesRegex(ValueError, "divisible"):
+            pipe(**inputs)
+
     def test_callback_inputs(self):
         device = "cpu"
         pipe = self._build_pipe(device)

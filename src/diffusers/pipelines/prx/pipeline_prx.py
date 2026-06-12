@@ -523,10 +523,12 @@ class PRXPipeline(
                 "`negative_prompt_embeds` must also be provided for classifier-free guidance."
             )
 
-        spatial_compression = self.vae_scale_factor
-        if height % spatial_compression != 0 or width % spatial_compression != 0:
+        # The latents must be divisible by the transformer's patch size after VAE compression.
+        dimension_multiple = self.vae_scale_factor * self.transformer.config.patch_size
+        if height % dimension_multiple != 0 or width % dimension_multiple != 0:
             raise ValueError(
-                f"`height` and `width` have to be divisible by {spatial_compression} but are {height} and {width}."
+                f"`height` and `width` have to be divisible by {dimension_multiple} (vae_scale_factor *"
+                f" transformer patch_size) but are {height} and {width}."
             )
 
         if guidance_scale < 1.0:
