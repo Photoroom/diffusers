@@ -33,7 +33,8 @@ PRX offers multiple variants with different VAE configurations, each optimized f
 | [`Photoroom/prx-512-t2i-sft-distilled`](https://huggingface.co/Photoroom/prx-512-t2i-sft-distilled)| 512 | Yes | Yes | 8-step distilled model from [`Photoroom/prx-512-t2i-sft`](https://huggingface.co/Photoroom/prx-512-t2i-sft) | Can handle less detailed prompts in natural language|8 steps, cfg=1.0| `torch.bfloat16` |
 | [`Photoroom/prx-512-t2i-dc-ae`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae)| 512 | No | No | Base model pre-trained at 512 with [Deep Compression Autoencoder (DC-AE)](https://hanlab.mit.edu/projects/dc-ae)|Works best with detailed prompts in natural language|28 steps, cfg=5.0| `torch.bfloat16` |
 | [`Photoroom/prx-512-t2i-dc-ae-sft`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae-sft)| 512 | Yes | No | Fine-tuned on the [Alchemist dataset](https://huggingface.co/datasets/yandex/alchemist) dataset with [Deep Compression Autoencoder (DC-AE)](https://hanlab.mit.edu/projects/dc-ae) | Can handle less detailed prompts in natural language|28 steps, cfg=5.0| `torch.bfloat16` |
-| [`Photoroom/prx-512-t2i-dc-ae-sft-distilled`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae-sft-distilled)| 512 | Yes | Yes | 8-step distilled model from [`Photoroom/prx-512-t2i-dc-ae-sft-distilled`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae-sft-distilled) | Can handle less detailed prompts in natural language|8 steps, cfg=1.0| `torch.bfloat16` |s
+| [`Photoroom/prx-512-t2i-dc-ae-sft-distilled`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae-sft-distilled)| 512 | Yes | Yes | 8-step distilled model from [`Photoroom/prx-512-t2i-dc-ae-sft-distilled`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae-sft-distilled) | Can handle less detailed prompts in natural language|8 steps, cfg=1.0| `torch.bfloat16` |
+| [`Photoroom/prxpixel-t2i`](https://huggingface.co/Photoroom/prxpixel-t2i)| 1024 | No | No | Pixel-space model (~7B transformer, no VAE) with a Qwen3-VL text encoder, loaded with [`PRXPixelPipeline`] | Works best with detailed prompts in natural language|28 steps, cfg=5.0| `torch.bfloat16` |
 
 Refer to [this](https://huggingface.co/collections/Photoroom/prx-models-68e66254c202ebfab99ad38e) collection for more information.
 
@@ -51,6 +52,22 @@ pipe.to("cuda")
 prompt = "A front-facing portrait of a lion the golden savanna at sunset."
 image = pipe(prompt, num_inference_steps=28, guidance_scale=5.0).images[0]
 image.save("prx_output.png")
+```
+
+### Pixel-space generation
+
+[`PRXPixelPipeline`] denoises raw RGB directly, so no VAE is loaded or needed. It requires `transformers >= 4.57` (the version that introduced `Qwen3VLTextModel`).
+
+```py
+import torch
+from diffusers import PRXPixelPipeline
+
+pipe = PRXPixelPipeline.from_pretrained("Photoroom/prxpixel-t2i", torch_dtype=torch.bfloat16)
+pipe.to("cuda")
+
+prompt = "A front-facing portrait of a lion in the golden savanna at sunset."
+image = pipe(prompt, num_inference_steps=28, guidance_scale=5.0).images[0]
+image.save("prxpixel_output.png")
 ```
 
 ### Manual Component Loading

@@ -43,6 +43,19 @@ class PRXPixelPipeline(PRXPipeline):
     This pipeline inherits from [`PRXPipeline`]. Check the superclass documentation for the generic methods (text
     encoding, latent preparation, the `__call__` signature, ...).
 
+    Examples:
+        ```py
+        >>> import torch
+        >>> from diffusers import PRXPixelPipeline
+
+        >>> pipe = PRXPixelPipeline.from_pretrained("Photoroom/prxpixel-t2i", torch_dtype=torch.bfloat16)
+        >>> pipe.to("cuda")
+
+        >>> prompt = "A front-facing portrait of a lion in the golden savanna at sunset."
+        >>> image = pipe(prompt, num_inference_steps=28, guidance_scale=5.0).images[0]
+        >>> image.save("prxpixel_output.png")
+        ```
+
     Args:
         transformer ([`PRXTransformer2DModel`]):
             The PRX denoiser. For PRXPixel this is built with `in_channels=3`, a bottleneck `img_in`, and
