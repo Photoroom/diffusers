@@ -15,17 +15,15 @@
 # PRX
 
 
-PRX is a family of efficient text-to-image diffusion models by Photoroom. The flagship model, **PRXPixel** ([`PRXPixelPipeline`]), generates 1024px images directly in pixel space: a ~7B transformer denoises raw RGB without any VAE, conditioned on a Qwen3-VL text encoder, and feeds the generation resolution into the timestep modulation. It uses flow matching and predicts the clean image at each step (x-prediction).
-
-Earlier PRX versions ([`PRXPipeline`]) operate in a VAE latent space (Flux VAE with 8x compression, or DC-AE with 32x compression) with a ~1.3B simplified MMDIT transformer where text tokens don't update through the blocks, and Google's T5Gemma-2B-2B-UL2 model for text encoding.
+PRX generates high-quality images from text using a simplified MMDIT architecture where text tokens don't update through transformer blocks. It employs flow matching with discrete scheduling for efficient sampling and uses Google's T5Gemma-2B-2B-UL2 model for multi-language text encoding. The ~1.3B parameter transformer delivers fast inference without sacrificing quality. You can choose between Flux VAE (8x compression, 16 latent channels) for balanced quality and speed or DC-AE (32x compression, 32 latent channels) for latent compression and faster processing.
 
 ## Available models
 
-**PRXPixel is the flagship model.** The other checkpoints are earlier latent-space versions of PRX at 256/512px with different VAE configurations; the distilled variants generate in 8 steps.
+PRX offers multiple variants with different VAE configurations, each optimized for specific resolutions. Base models excel with detailed prompts, capturing complex compositions and subtle details. Fine-tuned models trained on the [Alchemist dataset](https://huggingface.co/datasets/yandex/alchemist) improve aesthetic quality, especially with simpler prompts.
+
 
 | Model | Resolution | Fine-tuned | Distilled | Description | Suggested prompts | Suggested parameters | Recommended dtype |
 |:-----:|:-----------------:|:----------:|:----------:|:----------:|:----------:|:----------:|:----------:|
-| [`Photoroom/prxpixel-t2i`](https://huggingface.co/Photoroom/prxpixel-t2i)| 1024 | No | No | Flagship pixel-space model (~7B transformer, no VAE) with a Qwen3-VL text encoder, loaded with [`PRXPixelPipeline`] | Works best with detailed prompts in natural language|28 steps, cfg=5.0| `torch.bfloat16` |
 | [`Photoroom/prx-256-t2i`](https://huggingface.co/Photoroom/prx-256-t2i)| 256 | No | No | Base model pre-trained at 256 with Flux VAE|Works best with detailed prompts in natural language|28 steps, cfg=5.0| `torch.bfloat16` |
 | [`Photoroom/prx-256-t2i-sft`](https://huggingface.co/Photoroom/prx-256-t2i-sft)| 512 | Yes | No | Fine-tuned on the [Alchemist dataset](https://huggingface.co/datasets/yandex/alchemist) dataset with Flux VAE | Can handle less detailed prompts|28 steps, cfg=5.0| `torch.bfloat16` |
 | [`Photoroom/prx-512-t2i`](https://huggingface.co/Photoroom/prx-512-t2i)| 512 | No | No | Base model pre-trained at 512 with Flux VAE |Works best with detailed prompts in natural language|28 steps, cfg=5.0| `torch.bfloat16` |
@@ -33,45 +31,29 @@ Earlier PRX versions ([`PRXPipeline`]) operate in a VAE latent space (Flux VAE w
 | [`Photoroom/prx-512-t2i-sft-distilled`](https://huggingface.co/Photoroom/prx-512-t2i-sft-distilled)| 512 | Yes | Yes | 8-step distilled model from [`Photoroom/prx-512-t2i-sft`](https://huggingface.co/Photoroom/prx-512-t2i-sft) | Can handle less detailed prompts in natural language|8 steps, cfg=1.0| `torch.bfloat16` |
 | [`Photoroom/prx-512-t2i-dc-ae`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae)| 512 | No | No | Base model pre-trained at 512 with [Deep Compression Autoencoder (DC-AE)](https://hanlab.mit.edu/projects/dc-ae)|Works best with detailed prompts in natural language|28 steps, cfg=5.0| `torch.bfloat16` |
 | [`Photoroom/prx-512-t2i-dc-ae-sft`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae-sft)| 512 | Yes | No | Fine-tuned on the [Alchemist dataset](https://huggingface.co/datasets/yandex/alchemist) dataset with [Deep Compression Autoencoder (DC-AE)](https://hanlab.mit.edu/projects/dc-ae) | Can handle less detailed prompts in natural language|28 steps, cfg=5.0| `torch.bfloat16` |
-| [`Photoroom/prx-512-t2i-dc-ae-sft-distilled`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae-sft-distilled)| 512 | Yes | Yes | 8-step distilled model from [`Photoroom/prx-512-t2i-dc-ae-sft-distilled`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae-sft-distilled) | Can handle less detailed prompts in natural language|8 steps, cfg=1.0| `torch.bfloat16` |
+| [`Photoroom/prx-512-t2i-dc-ae-sft-distilled`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae-sft-distilled)| 512 | Yes | Yes | 8-step distilled model from [`Photoroom/prx-512-t2i-dc-ae-sft-distilled`](https://huggingface.co/Photoroom/prx-512-t2i-dc-ae-sft-distilled) | Can handle less detailed prompts in natural language|8 steps, cfg=1.0| `torch.bfloat16` |s
 
 Refer to [this](https://huggingface.co/collections/Photoroom/prx-models-68e66254c202ebfab99ad38e) collection for more information.
 
 ## Loading the pipeline
 
-Load the pipeline with [`~DiffusionPipeline.from_pretrained`]. [`PRXPixelPipeline`] denoises raw RGB directly, so no VAE is loaded or needed. It requires `transformers >= 4.57` (the version that introduced `Qwen3VLTextModel`).
+Load the pipeline with [`~DiffusionPipeline.from_pretrained`].
 
 ```py
-import torch
-from diffusers import PRXPixelPipeline
+from diffusers.pipelines.prx import PRXPipeline
 
-pipe = PRXPixelPipeline.from_pretrained("Photoroom/prxpixel-t2i", torch_dtype=torch.bfloat16)
-pipe.to("cuda")
-
-prompt = "A front-facing portrait of a lion in the golden savanna at sunset."
-image = pipe(prompt, num_inference_steps=28, guidance_scale=5.0).images[0]
-image.save("prxpixel_output.png")
-```
-
-### Latent-space generation (earlier PRX versions)
-
-Use [`PRXPipeline`] for the earlier latent-space checkpoints; the VAE and text encoder are loaded as part of the pipeline.
-
-```py
-import torch
-from diffusers import PRXPipeline
-
+# Load pipeline - VAE and text encoder will be loaded from HuggingFace
 pipe = PRXPipeline.from_pretrained("Photoroom/prx-512-t2i-sft", torch_dtype=torch.bfloat16)
 pipe.to("cuda")
 
-prompt = "A front-facing portrait of a lion in the golden savanna at sunset."
+prompt = "A front-facing portrait of a lion the golden savanna at sunset."
 image = pipe(prompt, num_inference_steps=28, guidance_scale=5.0).images[0]
 image.save("prx_output.png")
 ```
 
 ### Manual Component Loading
 
-Load components individually to customize the pipeline, for instance to use quantized models (shown here for the latent-space [`PRXPipeline`]).
+Load components individually to customize the pipeline for instance to use quantized models.
 
 ```py
 import torch
@@ -129,20 +111,14 @@ For memory-constrained environments:
 
 ```py
 import torch
-from diffusers import PRXPixelPipeline
+from diffusers.pipelines.prx import PRXPipeline
 
-pipe = PRXPixelPipeline.from_pretrained("Photoroom/prxpixel-t2i", torch_dtype=torch.bfloat16)
+pipe = PRXPipeline.from_pretrained("Photoroom/prx-512-t2i-sft", torch_dtype=torch.bfloat16)
 pipe.enable_model_cpu_offload()  # Offload components to CPU when not in use
 
 # Or use sequential CPU offload for even lower memory
 pipe.enable_sequential_cpu_offload()
 ```
-
-## PRXPixelPipeline
-
-[[autodoc]] PRXPixelPipeline
-  - all
-  - __call__
 
 ## PRXPipeline
 

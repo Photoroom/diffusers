@@ -1,25 +1,20 @@
 import unittest
 
 import numpy as np
-import pytest
 import torch
 from transformers import Qwen2Tokenizer, Qwen3Config, Qwen3Model
 
 from diffusers.models.transformers.transformer_prx import PRXTransformer2DModel
 from diffusers.pipelines.prx.pipeline_prx_pixel import PRXPixelPipeline
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-from diffusers.utils import is_transformers_version
 
 from ..pipeline_params import TEXT_TO_IMAGE_PARAMS
 from ..test_pipelines_common import PipelineTesterMixin
 
 
-@pytest.mark.xfail(
-    condition=is_transformers_version(">", "4.57.1"),
-    reason="See https://github.com/huggingface/diffusers/pull/12456#issuecomment-3424228544",
-    strict=False,
-)
 class PRXPixelPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
+    # PRXPixelPipeline is standalone: it inherits from DiffusionPipeline (not PRXPipeline) and always has its own
+    # image_processor, so it denoises raw RGB in pixel space and supports output_type="pil"/"np" without a VAE.
     pipeline_class = PRXPixelPipeline
     params = TEXT_TO_IMAGE_PARAMS - {"cross_attention_kwargs"}
     batch_params = frozenset(["prompt", "negative_prompt", "num_images_per_prompt"])
@@ -94,7 +89,11 @@ class PRXPixelPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
             "guidance_scale": 1.0,
             "height": 32,
             "width": 32,
+            # Pixel-space PRX has no VAE and returns raw (C, H, W) tensors for output_type="pt". The generic
+            # PipelineTesterMixin tests compare these tensors directly, so default to "pt" here; the PIL/np default
+            # path is exercised explicitly in test_inference and test_inference_pil_and_np_output.
             "output_type": "pt",
+            # 32px is not in the 1024 aspect-ratio bins, so binning must be disabled for these tiny fast tests.
             "use_resolution_binning": False,
         }
 
@@ -113,17 +112,23 @@ class PRXPixelPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         device = "cpu"
         pipe = self._build_pipe(device)
 
-        # No VAE -> identity pixel space, vae_scale_factor == 1, but postprocessing still works
-        # through an image processor so output_type="pil"/"np" are supported.
+        # No VAE -> identity pixel space, vae_scale_factor == 1, but the pipeline always carries an image processor
+        # so postprocessing (and the default output_type="pil") works without decoding.
         self.assertIsNone(pipe.vae)
         self.assertEqual(pipe.vae_scale_factor, 1)
         self.assertIsNotNone(pipe.image_processor)
 
+        # Default output is PIL (no VAE needed: the image processor denormalizes the denoised pixels directly).
+        inputs = self.get_dummy_inputs(device)
+        inputs.pop("output_type")  # default is "pil"
+        images = pipe(**inputs).images
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].size, (32, 32))
+
+        # Raw "pt" output is the denoised RGB tensor at the requested resolution.
         inputs = self.get_dummy_inputs(device)
         image = pipe(**inputs)[0]
         generated_image = image[0]
-
-        # Output is raw RGB at the requested resolution.
         self.assertEqual(generated_image.shape, (3, 32, 32))
         expected_image = torch.zeros(3, 32, 32)
         max_diff = np.abs(generated_image.cpu().numpy() - expected_image.numpy()).max()
@@ -268,8 +273,8 @@ class PRXPixelPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
 
     def test_attention_slicing_forward_pass(self, expected_max_diff=1e-3):
         # Overridden: the mixin version calls assert_mean_pixel_difference, which assumes HWC image
-        # arrays. Pixel-space PRX has no VAE and returns raw (C, H, W) tensors ("pt"), so we compare
-        # tensors directly instead of going through PIL.
+        # arrays. Pixel-space PRX has no VAE; compare raw (C, H, W) tensors directly ("pt") instead of
+        # going through PIL.
         if not self.test_attention_slicing:
             return
 

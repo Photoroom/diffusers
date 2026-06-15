@@ -125,12 +125,6 @@ class TextPreprocessor:
             + r"]{1,}"
         )
 
-    def basic_clean(self, text: str) -> str:
-        """Light cleaning (fix mojibake + unescape HTML). Used by encoders trained without DeepFloyd cleaning."""
-        text = ftfy.fix_text(text)
-        text = html.unescape(html.unescape(text))
-        return text.strip()
-
     def clean_text(self, text: str) -> str:
         """Clean text using comprehensive text processing logic."""
         # See Deepfloyd https://github.com/deep-floyd/IF/blob/develop/deepfloyd_if/modules/t5.py
@@ -236,6 +230,12 @@ class TextPreprocessor:
 
         return text.strip()
 
+    def basic_clean(self, text: str) -> str:
+        """Light cleaning: fix mojibake and unescape HTML. Used when skip_text_cleaning=True."""
+        text = ftfy.fix_text(text)
+        text = html.unescape(html.unescape(text))
+        return text.strip()
+
 
 EXAMPLE_DOC_STRING = """
     Examples:
@@ -303,20 +303,6 @@ class PRXPipeline(
         self.text_preprocessor = TextPreprocessor()
         self.default_sample_size = default_sample_size
         self._guidance_scale = 1.0
-        # Max number of text tokens. When None, falls back to the tokenizer's own ``model_max_length``.
-        # Subclasses (e.g. the PRXPixel pipeline, whose Qwen tokenizer has a very large model_max_length)
-        # can pin this to the value used at training time.
-        self.tokenizer_max_length = None
-        # When True, prompts get only light cleaning (``basic_clean``) instead of the DeepFloyd ``clean_text``.
-        # Set by subclasses whose text encoder was trained without the heavy cleaning (e.g. the Qwen tower).
-        self.skip_text_cleaning = False
-        # What the transformer predicts. "flow_matching" -> velocity (consumed directly by the scheduler).
-        # "x_prediction_flow_matching" -> the clean sample x0, converted to velocity before each scheduler step
-        # (see "Back to Basics: Let Denoising Generative Models Denoise", https://arxiv.org/abs/2511.13720).
-        self.prediction_type = "flow_matching"
-        # Standard deviation of the initial noise. Some PRX variants train with a non-unit noise scale and must
-        # start sampling from `randn * noise_scale` to match the learned flow-matching trajectory.
-        self.noise_scale = 1.0
 
         self.register_modules(
             transformer=transformer,
@@ -382,7 +368,7 @@ class PRXPipeline(
                 width // spatial_compression,
             )
             shape = (batch_size, num_channels_latents, latent_height, latent_width)
-            latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype) * self.noise_scale
+            latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
         else:
             latents = latents.to(device)
         return latents
@@ -398,6 +384,8 @@ class PRXPipeline(
         negative_prompt_embeds: torch.FloatTensor | None = None,
         prompt_attention_mask: torch.BoolTensor | None = None,
         negative_prompt_attention_mask: torch.BoolTensor | None = None,
+        tokenizer_max_length: int | None = None,
+        skip_text_cleaning: bool = False,
     ):
         """Encode text prompt using standard text encoder and tokenizer, or use precomputed embeddings."""
         if device is None:
@@ -408,7 +396,14 @@ class PRXPipeline(
                 prompt = [prompt]
             # Encode the prompts
             prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask = (
-                self._encode_prompt_standard(prompt, device, do_classifier_free_guidance, negative_prompt)
+                self._encode_prompt_standard(
+                    prompt,
+                    device,
+                    do_classifier_free_guidance,
+                    negative_prompt,
+                    tokenizer_max_length=tokenizer_max_length,
+                    skip_text_cleaning=skip_text_cleaning,
+                )
             )
 
         # Duplicate embeddings for each generation per prompt
@@ -439,11 +434,17 @@ class PRXPipeline(
             negative_prompt_attention_mask if do_classifier_free_guidance else None,
         )
 
-    def _tokenize_prompts(self, prompts: list[str], device: torch.device):
+    def _tokenize_prompts(
+        self,
+        prompts: list[str],
+        device: torch.device,
+        tokenizer_max_length: int | None = None,
+        skip_text_cleaning: bool = False,
+    ):
         """Tokenize and clean prompts."""
-        clean_fn = self.text_preprocessor.basic_clean if self.skip_text_cleaning else self.text_preprocessor.clean_text
+        clean_fn = self.text_preprocessor.basic_clean if skip_text_cleaning else self.text_preprocessor.clean_text
         cleaned = [clean_fn(text) for text in prompts]
-        max_length = self.tokenizer_max_length or self.tokenizer.model_max_length
+        max_length = tokenizer_max_length or self.tokenizer.model_max_length
         tokens = self.tokenizer(
             cleaned,
             padding="max_length",
@@ -460,6 +461,8 @@ class PRXPipeline(
         device: torch.device,
         do_classifier_free_guidance: bool = True,
         negative_prompt: str = "",
+        tokenizer_max_length: int | None = None,
+        skip_text_cleaning: bool = False,
     ):
         """Encode prompt using standard text encoder and tokenizer with batch processing."""
         batch_size = len(prompt)
@@ -472,7 +475,9 @@ class PRXPipeline(
         else:
             prompts_to_encode = prompt
 
-        input_ids, attention_mask = self._tokenize_prompts(prompts_to_encode, device)
+        input_ids, attention_mask = self._tokenize_prompts(
+            prompts_to_encode, device, tokenizer_max_length=tokenizer_max_length, skip_text_cleaning=skip_text_cleaning
+        )
 
         with torch.no_grad():
             embeddings = self.text_encoder(
@@ -569,6 +574,8 @@ class PRXPipeline(
         use_resolution_binning: bool = True,
         callback_on_step_end: Callable[[int, int], None] | None = None,
         callback_on_step_end_tensor_inputs: list[str] = ["latents"],
+        tokenizer_max_length: int | None = None,
+        skip_text_cleaning: bool = False,
     ):
         """
         Function invoked when calling the pipeline for generation.
@@ -622,6 +629,12 @@ class PRXPipeline(
             output_type (`str`, *optional*, defaults to `"pil"`):
                 The output format of the generate image. Choose between
                 [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or `np.array`.
+            tokenizer_max_length (`int`, *optional*):
+                Override the maximum number of tokens used when tokenizing the prompt. Defaults to the tokenizer's own
+                ``model_max_length`` when not set.
+            skip_text_cleaning (`bool`, *optional*, defaults to `False`):
+                If `True`, uses only light prompt cleaning (fix encoding + unescape HTML) instead of the full DeepFloyd
+                cleaning pipeline.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~pipelines.prx.PRXPipelineOutput`] instead of a plain tuple.
             use_resolution_binning (`bool`, *optional*, defaults to `True`):
@@ -650,15 +663,6 @@ class PRXPipeline(
         height = height or default_resolution
         width = width or default_resolution
 
-        if use_resolution_binning and self.image_processor is None:
-            # Latent-space pipelines constructed without a VAE have no image_processor and cannot bin;
-            # disable it transparently.
-            logger.warning(
-                "Resolution binning requires an image processor, but none is available; "
-                "proceeding with use_resolution_binning=False."
-            )
-            use_resolution_binning = False
-
         if use_resolution_binning:
             if self.default_sample_size not in ASPECT_RATIO_BINS:
                 raise ValueError(
@@ -683,9 +687,9 @@ class PRXPipeline(
             negative_prompt_embeds,
         )
 
-        if self.vae is None and self.image_processor is None and output_type not in ["latent", "pt"]:
+        if self.vae is None and output_type not in ["latent", "pt"]:
             raise ValueError(
-                f"output_type='{output_type}' requires a VAE or an image processor, but neither is available. "
+                f"VAE is required for output_type='{output_type}' but it is not available. "
                 "Either provide a VAE or set output_type='latent' or 'pt' to get latent outputs."
             )
 
@@ -712,6 +716,8 @@ class PRXPipeline(
             negative_prompt_embeds=negative_prompt_embeds,
             prompt_attention_mask=prompt_attention_mask,
             negative_prompt_attention_mask=negative_prompt_attention_mask,
+            tokenizer_max_length=tokenizer_max_length,
+            skip_text_cleaning=skip_text_cleaning,
         )
         # Expose standard names for callbacks parity
         prompt_embeds = text_embeddings
@@ -790,12 +796,6 @@ class PRXPipeline(
                     noise_uncond, noise_text = noise_pred.chunk(2, dim=0)
                     noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
 
-                # If the model predicts the clean sample x0, convert it to the flow-matching velocity
-                # the scheduler expects: v = (x_t - x0) / t  (t = normalized noise level, clamped for stability).
-                if self.prediction_type == "x_prediction_flow_matching":
-                    t_x = torch.clamp(t.float() / self.scheduler.config.num_train_timesteps, min=0.05)
-                    noise_pred = (latents - noise_pred) / t_x
-
                 # Compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
 
@@ -810,19 +810,15 @@ class PRXPipeline(
                     progress_bar.update()
 
         # 8. Post-processing
-        if output_type == "latent" or (output_type == "pt" and self.image_processor is None):
+        if output_type == "latent" or (output_type == "pt" and self.vae is None):
             image = latents
         else:
-            if self.vae is not None:
-                # Unscale latents for VAE (supports both AutoencoderKL and AutoencoderDC)
-                scaling_factor = getattr(self.vae.config, "scaling_factor", 0.18215)
-                shift_factor = getattr(self.vae.config, "shift_factor", 0.0)
-                latents = (latents / scaling_factor) + shift_factor
-                # Decode using VAE (AutoencoderKL or AutoencoderDC)
-                image = self.vae.decode(latents, return_dict=False)[0]
-            else:
-                # Pixel-space pipelines have no VAE: the denoised latents are already images in [-1, 1].
-                image = latents
+            # Unscale latents for VAE (supports both AutoencoderKL and AutoencoderDC)
+            scaling_factor = getattr(self.vae.config, "scaling_factor", 0.18215)
+            shift_factor = getattr(self.vae.config, "shift_factor", 0.0)
+            latents = (latents / scaling_factor) + shift_factor
+            # Decode using VAE (AutoencoderKL or AutoencoderDC)
+            image = self.vae.decode(latents, return_dict=False)[0]
             # Resize back to original resolution if using binning
             if use_resolution_binning:
                 image = self.image_processor.resize_and_crop_tensor(image, orig_width, orig_height)
