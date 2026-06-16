@@ -20,7 +20,6 @@ import torch
 from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
 from ...image_processor import PixArtImageProcessor
-from ...models import AutoencoderDC, AutoencoderKL
 from ...models.transformers.transformer_prx import PRXTransformer2DModel
 from ...pipelines.pipeline_utils import DiffusionPipeline
 from ...schedulers import FlowMatchEulerDiscreteScheduler
@@ -134,8 +133,6 @@ class PRXPixelPipeline(DiffusionPipeline):
             `last_hidden_state`.
         tokenizer ([`PreTrainedTokenizerBase`]):
             Tokenizer for `text_encoder` (typically loaded via `AutoTokenizer`).
-        vae ([`AutoencoderKL`] or [`AutoencoderDC`], *optional*):
-            Optional VAE. PRXPixel operates in pixel space, so this is usually `None` (an identity VAE).
         default_sample_size (`int`, *optional*, defaults to 1024):
             Default height/width used when none is provided to `__call__`.
         prompt_max_tokens (`int`, *optional*, defaults to 256):
@@ -145,9 +142,8 @@ class PRXPixelPipeline(DiffusionPipeline):
             sampling must start from `randn * noise_scale`.
     """
 
-    model_cpu_offload_seq = "text_encoder->transformer->vae"
+    model_cpu_offload_seq = "text_encoder->transformer"
     _callback_tensor_inputs = ["latents", "prompt_embeds"]
-    _optional_components = ["vae"]
 
     def __init__(
         self,
@@ -155,7 +151,6 @@ class PRXPixelPipeline(DiffusionPipeline):
         scheduler: FlowMatchEulerDiscreteScheduler,
         text_encoder: PreTrainedModel,
         tokenizer: AutoTokenizer | PreTrainedTokenizerBase,
-        vae: AutoencoderKL | AutoencoderDC | None = None,
         default_sample_size: int | None = PRX_PIXEL_DEFAULT_RESOLUTION,
         prompt_max_tokens: int = PRX_PIXEL_DEFAULT_MAX_TOKENS,
         noise_scale: float = 2.0,
@@ -170,7 +165,6 @@ class PRXPixelPipeline(DiffusionPipeline):
             scheduler=scheduler,
             text_encoder=text_encoder,
             tokenizer=tokenizer,
-            vae=vae,
         )
         self.register_to_config(
             default_sample_size=default_sample_size,
@@ -184,13 +178,8 @@ class PRXPixelPipeline(DiffusionPipeline):
 
     @property
     def vae_scale_factor(self):
-        # PRXPixel operates directly in RGB pixel space (identity / no VAE): no spatial compression.
-        if self.vae is None:
-            return 1
-        if hasattr(self.vae, "spatial_compression_ratio"):
-            return self.vae.spatial_compression_ratio
-        else:  # Flux VAE
-            return 2 ** (len(self.vae.config.block_out_channels) - 1)
+        # PRXPixel operates directly in RGB pixel space: no VAE, no spatial compression.
+        return 1
 
     @property
     # Copied from diffusers.pipelines.prx.pipeline_prx.PRXPipeline.do_classifier_free_guidance
@@ -581,12 +570,8 @@ class PRXPixelPipeline(DiffusionPipeline):
 
         self.num_timesteps = len(timesteps)
 
-        # 4. Prepare latent variables
-        if self.vae is not None:
-            num_channels_latents = self.vae.config.latent_channels
-        else:
-            # When vae is None, get latent channels from transformer
-            num_channels_latents = self.transformer.config.in_channels
+        # 4. Prepare latent variables (pixel space: in_channels RGB tensors, no VAE)
+        num_channels_latents = self.transformer.config.in_channels
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
             num_channels_latents,

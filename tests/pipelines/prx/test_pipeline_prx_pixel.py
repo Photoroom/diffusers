@@ -22,15 +22,6 @@ class PRXPixelPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     test_layerwise_casting = True
     test_group_offloading = True
 
-    @classmethod
-    def setUpClass(cls):
-        # Ensure PRXPixelPipeline has an _execution_device property expected by __call__
-        if not isinstance(getattr(PRXPixelPipeline, "_execution_device", None), property):
-            try:
-                setattr(PRXPixelPipeline, "_execution_device", property(lambda self: torch.device("cpu")))
-            except Exception:
-                pass
-
     def get_dummy_components(self):
         torch.manual_seed(0)
         # Pixel-space PRX: in_channels=3 (RGB), bottleneck img_in, resolution_embeds=True.
@@ -70,9 +61,6 @@ class PRXPixelPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
             "scheduler": scheduler,
             "text_encoder": text_encoder,
             "tokenizer": tokenizer,
-            # Pixel-space: no VAE. Passed explicitly (as None) so it appears in init_components and matches
-            # pipe.components (which always registers the optional `vae`).
-            "vae": None,
             "prompt_max_tokens": 16,
         }
 
@@ -102,19 +90,14 @@ class PRXPixelPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         pipe = PRXPixelPipeline(**components)
         pipe.to(device)
         pipe.set_progress_bar_config(disable=None)
-        try:
-            pipe.register_to_config(_execution_device=device)
-        except Exception:
-            pass
         return pipe
 
     def test_inference(self):
         device = "cpu"
         pipe = self._build_pipe(device)
 
-        # No VAE -> identity pixel space, vae_scale_factor == 1, but the pipeline always carries an image processor
-        # so postprocessing (and the default output_type="pil") works without decoding.
-        self.assertIsNone(pipe.vae)
+        # Pixel space: vae_scale_factor is always 1, and the pipeline always carries an image processor
+        # so postprocessing (and the default output_type="pil") works without any VAE.
         self.assertEqual(pipe.vae_scale_factor, 1)
         self.assertIsNotNone(pipe.image_processor)
 

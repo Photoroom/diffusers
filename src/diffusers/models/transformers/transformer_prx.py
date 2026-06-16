@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Optional
+from typing import Any
 
 import torch
 from torch import nn
 
 from ...configuration_utils import ConfigMixin, register_to_config
 from ...utils import logging
+from ...utils.torch_utils import maybe_adjust_dtype_for_device
 from ..attention import AttentionMixin, AttentionModuleMixin
 from ..attention_dispatch import dispatch_attention_fn
 from ..embeddings import get_timestep_embedding
@@ -275,9 +276,7 @@ class PRXEmbedND(nn.Module):
     def rope(self, pos: torch.Tensor, dim: int, theta: int) -> torch.Tensor:
         assert dim % 2 == 0
 
-        is_mps = pos.device.type == "mps"
-        is_npu = pos.device.type == "npu"
-        dtype = torch.float32 if (is_mps or is_npu) else torch.float64
+        dtype = maybe_adjust_dtype_for_device(torch.float64, pos.device)
 
         scale = torch.arange(0, dim, 2, dtype=dtype, device=pos.device) / dim
         omega = 1.0 / (theta**scale)
@@ -716,7 +715,7 @@ class PRXTransformer2DModel(ModelMixin, ConfigMixin, AttentionMixin):
         theta: int = 10000,
         time_factor: float = 1000.0,
         time_max_period: int = 10000,
-        bottleneck_size: Optional[int] = None,
+        bottleneck_size: int | None = None,
         resolution_embeds: bool = False,
     ):
         super().__init__()
